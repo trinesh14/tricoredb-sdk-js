@@ -16,7 +16,8 @@ test('package.json is publishable as tricoredb 0.1.0 with zero runtime dependenc
   assert.equal(pkg.name, 'tricoredb');
   assert.equal(pkg.version, '0.1.0');
   assert.equal(pkg.license, 'Apache-2.0');
-  assert.equal(pkg.engines.node, '>=18');
+  // Node 18 is past end-of-life; 20 is the oldest line the package supports.
+  assert.equal(pkg.engines.node, '>=20');
   assert.equal(pkg.dependencies, undefined);
   assert.equal(pkg.repository.url, 'git+https://github.com/trinesh14/tricoredb-sdk-js.git');
   assert.ok(Array.isArray(pkg.files) && pkg.files.includes('LICENSE'));

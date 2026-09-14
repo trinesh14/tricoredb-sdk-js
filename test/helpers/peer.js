@@ -30,8 +30,11 @@ function headerOnly(version, tag, declaredLength) {
 /** Parse frames off a socket and hand each `{tag, body}` to `onFrame(frame, sock)`. */
 function listen(onFrame) {
   const state = { connections: 0, requests: 0, frames: [] };
+  const sockets = new Set();
   const srv = net.createServer((sock) => {
     state.connections += 1;
+    sockets.add(sock);
+    sock.on('close', () => sockets.delete(sock));
     let buf = Buffer.alloc(0);
     sock.on('data', (c) => {
       buf = Buffer.concat([buf, c]);
@@ -39,9 +42,13 @@ function listen(onFrame) {
         const len = buf.readUInt32BE(2);
         if (buf.length < 6 + len) return;
         const tag = buf.readUInt8(1);
-        const body = len ? JSON.parse(buf.subarray(6, 6 + len).toString('utf8')) : null;
+        // `raw` is the payload exactly as it arrived. A test proving that a
+        // BigInt crossed the wire exactly must read this, not `body`:
+        // JSON.parse turns 9223372036854775807 into a rounded double.
+        const raw = buf.subarray(6, 6 + len).toString('utf8');
+        const body = len ? JSON.parse(raw) : null;
         buf = buf.subarray(6 + len);
-        const f = { tag, body };
+        const f = { tag, body, raw };
         state.frames.push(f);
         if (tag === TAG.REQUEST) state.requests += 1;
         onFrame(f, sock, state);
@@ -54,7 +61,13 @@ function listen(onFrame) {
       resolve({
         port: srv.address().port,
         state,
-        close: () => new Promise((r) => { srv.close(() => r()); }),
+        // `srv.close()` alone waits for every client socket to end. A test that
+        // fails before closing its client would then hang the whole run instead
+        // of reporting the failure, so remaining sockets are destroyed first.
+        close: () => new Promise((r) => {
+          for (const s of sockets) s.destroy();
+          srv.close(() => r());
+        }),
       });
     });
   });

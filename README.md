@@ -1,170 +1,399 @@
-# TriCoreDB JavaScript SDK
+# tricoredb
 
-A standalone Node.js client for TriCoreDB with SQL, document, vector, graph, cache, LLM, and admin APIs.
+Official Node.js client for [TriCoreDB](https://github.com/trinesh14/tricore-db) —
+SQL, documents, vectors, graphs and cache over one native connection.
 
-## Install
+[![npm](https://img.shields.io/npm/v/tricoredb.svg)](https://www.npmjs.com/package/tricoredb)
+[![node](https://img.shields.io/node/v/tricoredb.svg)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/tricoredb.svg)](LICENSE)
+
+- **Zero runtime dependencies** — nothing to audit but Node.js itself
+- **Written in TypeScript** — full type definitions, generated from the source
+- **ESM and CommonJS** — works with `import` and `require`
+- **Server-side parameters** — values never become part of the SQL text
+- **Exact values** — `bigint`, decimals and binary data survive the round trip
+- **Transactions, connection pooling, TLS and mutual TLS**
+
+## Contents
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Connecting](#connecting)
+- [SQL](#sql)
+- [Transactions](#transactions)
+- [Connection pool](#connection-pool)
+- [Documents](#documents)
+- [Vectors](#vectors)
+- [Graphs](#graphs)
+- [Cache](#cache)
+- [LLM context](#llm-context)
+- [Errors](#errors)
+- [TLS](#tls)
+- [Security](#security)
+- [Compatibility](#compatibility)
+
+## Requirements
+
+- Node.js **20** or later
+- A TriCoreDB server speaking protocol 1.0 (`tricore-server` 0.1.0-rc.1 or later)
+
+## Installation
 
 ```bash
 npm install tricoredb
 ```
 
-## Connect
+## Quick start
 
 ```js
-const { TriCore } = require('tricoredb');
+import { TriCore } from 'tricoredb';
 
-async function main() {
-  const db = await TriCore.connect({
-    host: '127.0.0.1',
-    port: 8427,
-    user: 'alice',
-    secret: 'pw',
-  });
-
-  const rows = await db.query('SELECT 1 AS n');
-  console.log(rows.rows[0][0]);
-  await db.close();
-}
-
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
+const db = await TriCore.connect({
+  host: '127.0.0.1',
+  port: 8427,
+  user: process.env.TRICOREDB_USER,
+  secret: process.env.TRICOREDB_PASSWORD,
 });
-```
 
-## SQL with parameters
+await db.execute('CREATE TABLE IF NOT EXISTS users (id INT PRIMARY KEY, name TEXT)');
+await db.execute('INSERT INTO users VALUES (?, ?)', [1, 'Ada']);
 
-The driver sends server-side parameters by default when the server grants `SERVER_PARAMS`. A `Date` becomes an ISO string and `Uint8Array`/`Buffer` become `0x` + hex.
+const rows = await db.query('SELECT id, name FROM users WHERE id = ?', [1]);
+console.log(rows.dicts()); // [ { id: '1', name: 'Ada' } ]
 
-```js
-const { TriCore } = require('tricoredb');
-
-const db = await TriCore.connect({ host: '127.0.0.1', port: 8427 });
-await db.execute('INSERT INTO t VALUES (?, ?, ?)', [42, 'hello', Buffer.from([0xde, 0xad])]);
-const rows = await db.query('SELECT * FROM t WHERE id = ?', [42]);
-console.log(rows.rows);
 await db.close();
 ```
+
+CommonJS:
+
+```js
+const { TriCore } = require('tricoredb');
+```
+
+TypeScript types ship with the package — no `@types` install needed:
+
+```ts
+import { TriCore, type ConnectOptions, type Rows } from 'tricoredb';
+```
+
+## Connecting
+
+```js
+const db = await TriCore.connect(options);
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `host` | `string` | `'127.0.0.1'` | Server host |
+| `port` | `number` | `8427` | Server port |
+| `user` | `string \| null` | — | Username. Omit to skip authentication. |
+| `secret` | `string` | — | Password |
+| `clientName` | `string` | — | Name reported to the server |
+| `timeout` | `number` | — | Milliseconds for connect, TLS, handshake and authentication. `0` disables it. |
+| `readTimeoutMs` | `number \| null` | `null` | Deadline for each reply. A timed-out connection is unusable afterwards. |
+| `tls` | `TlsOptions \| null` | — | Enables TLS. See [TLS](#tls). |
+| `features` | `number` | `FEATURES` | Capabilities to request during the handshake |
+
+```js
+await db.ping();               // round-trip check
+db.features;                   // { serverParams, sessionTxn, correlationId, mask }
+await db.close();
+```
+
+Every data method takes an optional **last** argument, `database`, which
+defaults to `'main'`.
+
+## SQL
+
+### Queries and statements
+
+```js
+const rows = await db.query('SELECT id, name FROM users WHERE name = ?', ['Ada']);
+rows.columns;   // ['id', 'name']
+rows.rows;      // [['1', 'Ada']]
+rows.dicts();   // [{ id: '1', name: 'Ada' }]
+rows.length;    // 1
+for (const row of rows) console.log(row);
+
+const res = await db.execute('UPDATE users SET name = ? WHERE id = ?', ['Grace', 1]);
+res.warnings;   // non-fatal server warnings
+```
+
+- `query()` returns `Rows`. **Every cell is a string** — convert to the type you
+  need (`Number(...)`, `BigInt(...)`, a decimal library, …).
+- `execute()` returns a `Response` for statements that do not return rows.
+
+### Parameters
+
+Use `?` placeholders (or `$1`, `$2`, …). Values are sent separately from the SQL
+text and bound by the server, so they can never change what the statement means.
+
+| JavaScript value | Sent as | Use for |
+| --- | --- | --- |
+| `null`, `undefined` | `NULL` | |
+| `boolean` | boolean | `BOOL` |
+| `number` (safe integer) | integer | `INT`, `BIGINT` |
+| `number` (fractional) | number | `DOUBLE` |
+| `bigint` | exact integer | `BIGINT` beyond 2⁵³ |
+| `string` | text | `TEXT`, and **exact** `DECIMAL` values (`'19.99'`) |
+| `Date` | ISO-8601 text | `TIMESTAMP` |
+| `Uint8Array` / `Buffer` | `0x…` hex | `BLOB` |
+
+- An integer `number` outside the safe range is **rejected** rather than silently
+  rounded — pass a `bigint` instead.
+- Send exact decimals as **strings**. A JavaScript `number` is a binary float.
+- Identifiers (table and column names) cannot be parameters. Validate them
+  against an allow-list.
 
 ## Transactions
 
-```js
-const { TriCore } = require('tricoredb');
+A session transaction spans several calls on the same connection:
 
-const db = await TriCore.connect({ host: '127.0.0.1', port: 8427 });
+```js
 await db.begin();
-await db.execute('INSERT INTO t VALUES (1, 100)');
-await db.commit();
-await db.close();
+try {
+  await db.execute('UPDATE accounts SET balance = balance - ? WHERE id = ?', [100, 1]);
+  await db.execute('UPDATE accounts SET balance = balance + ? WHERE id = ?', [100, 2]);
+  await db.commit();
+} catch (err) {
+  await db.rollback();
+  throw err;
+}
 ```
 
-The driver also supports one-request scripts and pooled transactions:
+`withTransaction` does the same: it commits when the callback resolves, and
+rolls back and re-throws when it throws.
 
 ```js
-const { Pool } = require('tricoredb');
-
-const pool = new Pool({ host: '127.0.0.1', port: 8427, size: 4 });
-await pool.use(async (db) => {
-  const res = await db.withTransaction(async (tx) => {
-    await tx.execute('INSERT INTO t VALUES (2, 200)');
-    return 'ok';
-  });
-  console.log(res);
+const orderId = await db.withTransaction(async (tx) => {
+  await tx.execute('INSERT INTO orders VALUES (?, ?)', [42, 'pending']);
+  await tx.execute('UPDATE stock SET qty = qty - 1 WHERE sku = ?', ['A-1']);
+  return 42;
 });
+```
+
+A pre-declared unit can also run atomically in a single request:
+
+```js
+await db.transaction([
+  ['INSERT INTO t VALUES (?)', [1]],
+  'DELETE FROM t WHERE id = 0',
+]);
+```
+
+If the server does not support session transactions, `begin()` fails with a
+clear error instead of silently running each statement on its own.
+
+## Connection pool
+
+```js
+import { Pool } from 'tricoredb';
+
+const pool = new Pool({ host: '127.0.0.1', port: 8427, user, secret, size: 8 });
+
+const rows = await pool.use((db) => db.query('SELECT COUNT(*) FROM users'));
+
+pool.stats(); // { size, created, idle, inUse, waiting }
 await pool.close();
 ```
 
-## Pool
+- `pool.use(fn, timeoutMs = 10000)` borrows a connection for the duration of
+  `fn` and returns it afterwards. It rejects with `PoolTimeout` if none frees up
+  in time.
+- A connection is never returned to the pool with a transaction still open; use
+  `db.withTransaction()` inside the callback.
 
-Use a pool when you want concurrency without overlapping requests on one socket:
-
-```js
-const { Pool } = require('tricoredb');
-
-const pool = new Pool({ host: '127.0.0.1', port: 8427, size: 8 });
-const rows = await pool.use(async (db) => db.query('SELECT 1 AS n'));
-console.log(rows.rows);
-await pool.close();
-```
-
-## Data models
-
-### Documents
+## Documents
 
 ```js
-const { DocFilter } = require('tricoredb');
+import { DocFilter, DocStage } from 'tricoredb';
 
 await db.documentCreateCollection('people');
-await db.documentInsert('people', { name: 'Ada', age: 36 });
-const docs = await db.documentFind('people', DocFilter.eq('name', 'Ada'));
+const id = await db.documentInsert('people', { name: 'Ada', city: 'London', visits: 3 });
+const doc = await db.documentGet('people', id);
+
+const londoners = await db.documentFind('people', DocFilter.eq('city', 'London'), { limit: 10 });
+
+await db.documentUpdateOne('people', id, { set: { city: 'Paris' }, inc: { visits: 1 } });
+await db.documentUpdateMany('people', DocFilter.gt('visits', 10), { set: { vip: true } });
+await db.documentCreateIndex('people', 'by_city', 'city', { unique: false });
+
+const perCity = await db.documentAggregate('people', [
+  DocStage.group(DocStage.byField('city'), [DocStage.countDocs('n'), DocStage.sum('total', 'visits')]),
+  DocStage.sort([{ field: 'n', descending: true }]),
+]);
 ```
 
-### Vectors
+Filters: `all`, `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `inList`, `contains`, `and`.
+Stages: `match`, `group`, `sort`, `skip`, `limit`, `project`, `count`.
+
+Also: `documentUpdate`, `documentDelete`, `documentListCollections`,
+`documentDropCollection`, `documentDropIndex`, `documentListIndexes`,
+`documentAnalyze`.
+
+## Vectors
 
 ```js
-await db.vectorCreateCollection('embeddings', 3, { metric: 'cosine' });
-await db.vectorUpsert('embeddings', 'ada', [0.1, 0.2, 0.3], { role: 'engineer' });
-const hits = await db.vectorSearch('embeddings', [0.1, 0.2, 0.3], 5);
+await db.vectorCreateCollection('embeddings', 3, { metric: 'cosine' }); // 'cosine' | 'dot' | 'l2'
+await db.vectorUpsert('embeddings', 'doc-1', [0.1, 0.2, 0.3], { title: 'Intro' });
+
+const hits = await db.vectorSearch('embeddings', [0.1, 0.2, 0.25], 5);
+// [{ id, score, metadata }], best first
 ```
 
-### Graphs
+Also: `vectorGet`, `vectorDelete`, `vectorListCollections`,
+`vectorDescribeCollection`, `vectorListVectors`, `vectorDropCollection`.
+
+## Graphs
 
 ```js
-await db.graphCreate('friends');
-await db.graphAddNode('friends', 'ada', { labels: ['person'], properties: { name: 'Ada' } });
-await db.graphAddNode('friends', 'grace', { labels: ['person'], properties: { name: 'Grace' } });
-await db.graphAddEdge('friends', 'e1', 'ada', 'grace', 'knows');
+await db.graphCreate('social');
+await db.graphAddNode('social', 'ada', { labels: ['person'], properties: { name: 'Ada' } });
+await db.graphAddNode('social', 'grace', { labels: ['person'], properties: { name: 'Grace' } });
+await db.graphAddEdge('social', 'e1', 'ada', 'grace', 'knows', { properties: { since: 1843 } });
+
+const friends = await db.graphNeighbors('social', 'ada', { direction: 'outgoing' });
+const path = await db.graphShortestPath('social', 'ada', 'grace');
+const result = await db.graphQuery('social', 'MATCH (p:person) RETURN p.name ORDER BY p.name');
+// { columns: ['p.name'], rows: [['Ada'], ['Grace']], count, truncated }
 ```
 
-### Cache
+Also: `graphGetNode`, `graphGetEdge`, `graphDeleteNode`, `graphDeleteEdge`,
+`graphTraverse`, `graphWeightedShortestPath`, `graphDegree`, `graphListNodes`,
+`graphListEdges`, `graphListGraphs`, `graphDrop`.
+
+## Cache
+
+Keys and values are binary-safe. Values accept `Buffer`, `Uint8Array` or `string`.
 
 ```js
-await db.cacheSet('app', 'hello', Buffer.from('world'), 60_000);
-const value = await db.cacheGetText('app', 'hello');
+await db.cacheSet('sessions', 'user:1', JSON.stringify({ id: 1 }), 60_000); // TTL in ms
+const raw = await db.cacheGet('sessions', 'user:1');       // Buffer | null
+const text = await db.cacheGetText('sessions', 'user:1');  // string | null
+await db.cacheIncr('counters', 'page:home');
+await db.cacheDelete('sessions', 'user:1');                // true if it existed
 ```
 
-### LLM context
+| Group | Methods |
+| --- | --- |
+| Keys | `cacheSet`, `cacheSetNx`, `cacheGet`, `cacheGetText`, `cacheDelete`, `cacheExists`, `cacheTtl`, `cacheExpire`, `cachePersist`, `cacheIncr`, `cacheKeys`, `cacheClearNamespace` |
+| Lists | `cacheLPush`, `cacheRPush`, `cacheLPop`, `cacheRPop`, `cacheLRange`, `cacheLLen`, `cacheLIndex` |
+| Sets | `cacheSAdd`, `cacheSRem`, `cacheSIsMember`, `cacheSCard`, `cacheSMembers` |
+| Hashes | `cacheHSet`, `cacheHSetText`, `cacheHGet`, `cacheHDel`, `cacheHGetAll`, `cacheHExists`, `cacheHLen` |
+| Streams | `cacheXAdd`, `cacheXAddText`, `cacheXLen`, `cacheXRange`, `cacheXRead`, `cacheXDel`, `cacheXTrim` |
+
+## LLM context
+
+Build compact context for a language model from your data:
 
 ```js
-const bundle = await db.llmContext({ sql: 'SELECT * FROM t LIMIT 5' }, { format: 'json' });
+const context = await db.llmContext(
+  [{ sql: 'SELECT * FROM orders LIMIT 20' }, { collection: 'people', limit: 10 }],
+  { format: 'json', maxRows: 50, redactSensitive: true },
+);
+const schema = await db.llmSchema({ format: 'json' });
 ```
 
-### Admin
+## Errors
+
+All errors extend `TriCoreError`.
+
+| Class | When |
+| --- | --- |
+| `TriCoreError` | The server refused a request, or a general failure |
+| `AuthError` | Authentication failed |
+| `ProtocolError` | The server sent something the driver cannot interpret |
+| `Timeout` | No reply within `readTimeoutMs`. Discard the connection. |
+| `PoolTimeout` | No pooled connection became free in time |
+
+Branch on `err.code`, never on the message text:
 
 ```js
-await db.adminPing();
-const status = await db.adminStatus();
-```
+import { TriCoreError } from 'tricoredb';
 
-## Errors and redirects
-
-The SDK exposes stable error codes and leader hints. If the server replies with `not_leader`, the error sets `code` to `not_leader`, `leaderHint` to the hinted host:port value when one exists, and `isRedirect` to `true`. The driver does not follow the hint automatically.
-
-```js
 try {
-  await db.execute('INSERT INTO t VALUES (1)');
+  await db.execute('INSERT INTO users VALUES (?, ?)', [1, 'Ada']);
 } catch (err) {
+  if (err instanceof TriCoreError && err.code === 'state.conflict') {
+    // a concurrent transaction won — retry the transaction
+  }
+  throw err;
+}
+```
+
+| Code | Meaning |
+| --- | --- |
+| `perm.denied` | Not authorized for this operation or database |
+| `request.invalid` | The server refused the request (bad SQL, type mismatch, …) |
+| `request.malformed` | The request could not be interpreted |
+| `engine.disabled` | That data model is disabled on the server |
+| `limit.exceeded` | A resource limit was reached |
+| `state.conflict` | Transaction conflict — retrying the transaction may succeed |
+| `not_leader` | This cluster node cannot serve the request (see below) |
+| `internal` | Server fault |
+
+### Cluster redirects
+
+On a replicated cluster, a follower answers writes with `not_leader`. The error
+tells you where to go instead:
+
+```js
+catch (err) {
   if (err.isRedirect) {
-    console.log(err.code, err.leaderHint);
+    console.log(err.leaderHint); // 'host:port', or null while an election is in progress
   }
 }
 ```
+
+The driver does not reconnect automatically: whether that address is reachable
+from your network, and whether the operation is safe to repeat, is your
+application's decision. When `leaderHint` is `null`, wait and retry.
 
 ## TLS
 
 ```js
 const db = await TriCore.connect({
-  host: 'example.com',
+  host: 'db.example.com',
   port: 8427,
+  user,
+  secret,
   tls: {
-    caFile: '/path/to/ca.pem',
-    serverName: 'example.com',
+    caFile: '/etc/ssl/tricoredb-ca.pem',
+    serverName: 'db.example.com',
   },
 });
 ```
 
-For local development, set `dangerAcceptInvalidCerts: true` only when you deliberately want to skip hostname and certificate checks.
+| Option | Description |
+| --- | --- |
+| `caFile` | PEM CA bundle to trust |
+| `serverName` | Name expected in the server certificate (SNI) |
+| `clientCertFile`, `clientKeyFile` | Client certificate and key, for mutual TLS |
+| `dangerAcceptInvalidCerts` | Skips certificate verification. **Development only.** |
+
+## Security
+
+- Load credentials from the environment or a secret manager — never commit them.
+- Use TLS whenever traffic leaves a trusted network.
+- Always pass user input as parameters, never by string concatenation.
+- Connect with a least-privilege user.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+## Compatibility
+
+| tricoredb | Node.js | TriCoreDB protocol |
+| --- | --- | --- |
+| 0.1.x | 20+ | 1.0 |
+
+This package follows [semantic versioning](https://semver.org). See
+[CHANGELOG.md](CHANGELOG.md) for release notes.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-This project is licensed under the Apache License 2.0.
+[Apache-2.0](LICENSE)

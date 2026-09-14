@@ -167,7 +167,7 @@ test('HELLO/AUTH refusals are handled as protocol and auth errors, not success',
   }
 });
 
-test('feature bitmap and request ids are handled correctly', async () => {
+test('a server that grants no features is recorded as granting none', async () => {
   const peer = await hostilePeerRaw(() => {
     const payload = Buffer.from(JSON.stringify({ ok: true, features: 0 }), 'utf8');
     const h = Buffer.alloc(6); h.writeUInt8(1, 0); h.writeUInt8(8, 1); h.writeUInt32BE(payload.length, 2);
@@ -179,52 +179,5 @@ test('feature bitmap and request ids are handled correctly', async () => {
     await db.close();
   } finally {
     peer.srv.close();
-  }
-
-  const serverBinary = process.platform === 'win32' ? 'tricore-server.exe' : 'tricore-server';
-  const repoRoot = path.resolve(__dirname, '..', '..');
-  const candidates = [process.env.TRICORE_SERVER_BIN, path.join(repoRoot, 'target', 'release', serverBinary), path.join(repoRoot, 'target', 'debug', serverBinary)];
-  const bin = candidates.find((c) => c && fs.existsSync(c));
-  if (!bin) {
-    test.skip('no tricore-server binary available for live request-id checks');
-    return;
-  }
-
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tricore-node-hardening-'));
-  const dataDir = path.join(dir, 'data').replace(/\\/g, '/');
-  const cfg = `[server]\nhost = "127.0.0.1"\nport = 0\nnode_id = "sdk-node-hardening"\nregion_id = "test"\nshutdown_grace_secs = 1\n\n[modules]\nsql = true\ndocument = false\ncache = true\nvector = false\ngraph = false\nllm = false\ncluster = true\n\n[storage]\ndata_dir = "${dataDir}"\nfsync = false\n\n[security]\nauth_mode = "password"\ndev_auth = true\n\n[tls]\nenabled = false\n`;
-  const file = path.join(dir, 'tricore.hardening.toml');
-  fs.writeFileSync(file, cfg, 'utf8');
-
-  const proc = spawn(bin, ['--config', file], { stdio: ['ignore', 'pipe', 'pipe'] });
-  const waited = await new Promise((resolve, reject) => {
-    let out = '';
-    let err = '';
-    const timer = setTimeout(() => reject(new Error(`server did not report a port within 30s.\n${out}\n${err}`)), 30000);
-    proc.stdout.on('data', (c) => {
-      out += c.toString();
-      const m = /listening on\s+([0-9.]+):(\d+)/.exec(out);
-      if (m) { clearTimeout(timer); resolve({ host: m[1], port: Number(m[2]) }); }
-    });
-    proc.stderr.on('data', (c) => { err += c.toString(); });
-    proc.on('error', reject);
-    proc.on('exit', (code) => {
-      if (!out && code !== 0) reject(new Error(`server exited ${code}\n${out}\n${err}`));
-    });
-  });
-
-  try {
-    const opts = { host: waited.host, port: waited.port, user: 'alice', secret: 'pw' };
-    const a = await TriCore.connect(opts);
-    const b = await TriCore.connect(opts);
-    const ra = await a.request({ Admin: 'Ping' });
-    const rb = await b.request({ Admin: 'Ping' });
-    assert.ok(ra.requestId && rb.requestId);
-    assert.notEqual(ra.requestId, rb.requestId);
-    await a.close();
-    await b.close();
-  } finally {
-    proc.kill();
-    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -54,19 +54,22 @@
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "pretest": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/types/tsconfig.json",
+    "pretest": "npm run build",
     "test": "node scripts/test.mjs",
     "test:unit": "node scripts/test.mjs unit",
     "test:live": "node scripts/test.mjs live",
     "conformance": "node scripts/conformance.mjs",
-    "pack-dry-run": "node scripts/pack-dry-run.mjs",
     "pack:dry-run": "node scripts/pack-dry-run.mjs",
-    "prepack": "node scripts/build.mjs"
+    "prepack": "node scripts/build.mjs",
+    "prepublishOnly": "npm run typecheck && npm run test:unit"
   },
   "devDependencies": {
     "@types/node": "^18.19.0",
