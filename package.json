@@ -1,0 +1,75 @@
+{
+  "name": "tricoredb",
+  "version": "0.1.0",
+  "description": "TriCoreDB client for Node.js: native tricore wire protocol, SQL, documents, vectors, graphs and cache, zero runtime dependencies.",
+  "keywords": [
+    "tricoredb",
+    "tricore",
+    "database",
+    "driver",
+    "client",
+    "sql",
+    "document",
+    "vector",
+    "graph",
+    "cache",
+    "typescript"
+  ],
+  "license": "Apache-2.0",
+  "author": "Trinesh Kumar",
+  "homepage": "https://github.com/trinesh14/tricoredb-sdk-js#readme",
+  "bugs": {
+    "url": "https://github.com/trinesh14/tricoredb-sdk-js/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trinesh14/tricoredb-sdk-js.git"
+  },
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/cjs/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/cjs/**/*.js",
+    "dist/cjs/**/*.d.ts",
+    "dist/cjs/package.json",
+    "dist/esm/**/*.js",
+    "dist/esm/**/*.d.ts",
+    "dist/esm/package.json",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "pretest": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/types/tsconfig.json",
+    "test": "node scripts/test.mjs",
+    "test:unit": "node scripts/test.mjs unit",
+    "test:live": "node scripts/test.mjs live",
+    "conformance": "node scripts/conformance.mjs",
+    "pack-dry-run": "node scripts/pack-dry-run.mjs",
+    "pack:dry-run": "node scripts/pack-dry-run.mjs",
+    "prepack": "node scripts/build.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "typescript": "~5.9.3"
+  }
+}

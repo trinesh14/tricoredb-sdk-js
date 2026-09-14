@@ -1,0 +1,1 @@
+{"name":"js","probe":["node","--version"],"build":[["npm","ci"],["npm","run","build"]],"run":["node","conformance/runner.js"]}
