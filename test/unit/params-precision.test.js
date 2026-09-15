@@ -1,17 +1,17 @@
 'use strict';
 
-const test = require('node:test');
+// `describe`/`it`, not a `test()` wrapping top-level `test()` calls. Node 24
+// waits for tests created inside a running test; Node 20 and 22 finish the
+// synchronous parent first and cancel every child ("test did not finish before
+// its parent"), so the old shape passed on 24 and failed on the older lines the
+// package supports.
+const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { TriCoreError } = require('tricoredb');
+const { encodeBody, sqlParam, bindParams } = require('tricoredb');
 
-const api = require('tricoredb');
-const { encodeBody, sqlParam, bindParams } = api;
-
-const suite = test;
-
-suite('BigInt parameters survive the frame body exactly', () => {
-  test('BigInt values encode as exact JSON numbers without losing digits', () => {
+describe('BigInt parameters survive the frame body exactly', () => {
+  it('BigInt values encode as exact JSON numbers without losing digits', () => {
     const big = 9223372036854775807n;
     const body = encodeBody({ Sql: { Query: { sql: 'SELECT ?', params: [sqlParam(big)] } } });
     assert.match(body, /9223372036854775807/);
@@ -27,7 +27,7 @@ suite('BigInt parameters survive the frame body exactly', () => {
     assert.match(several, /\[1,2,3\]/);
   });
 
-  test('integer-valued numbers outside the safe range are refused by name', () => {
+  it('integer-valued numbers outside the safe range are refused by name', () => {
     assert.throws(() => sqlParam(9007199254740993), /BigInt/i);
     assert.throws(() => sqlParam(-9007199254740993), /BigInt/i);
     assert.equal(sqlParam(42), 42);
@@ -40,7 +40,7 @@ suite('BigInt parameters survive the frame body exactly', () => {
     assert.throws(() => sqlParam(9223372036854774784), /BigInt/i);
   });
 
-  test('bytes bind as BLOB hex and views send only their own window', () => {
+  it('bytes bind as BLOB hex and views send only their own window', () => {
     const bytes = Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x27, 0x5c, 0x68, 0x69, 0x00]);
     assert.equal(sqlParam(bytes), '0x0001fffe275c686900');
     assert.notEqual(bytes.toString('utf8'), '\u0000\u0001\u00ff\u00fe\'\\hi\u0000');
@@ -54,7 +54,7 @@ suite('BigInt parameters survive the frame body exactly', () => {
     assert.equal(sqlParam(bytes), `0x${bytes.toString('hex')}`);
   });
 
-  test('client-side literal rendering stays consistent with server-side binding', () => {
+  it('client-side literal rendering stays consistent with server-side binding', () => {
     const bytes = Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x27, 0x5c, 0x68, 0x69, 0x00]);
     assert.equal(bindParams('INSERT INTO t VALUES (?, ?)', [1, bytes]), "INSERT INTO t VALUES (1, '0x0001fffe275c686900')");
     assert.equal(bindParams('INSERT INTO t VALUES (?)', [Buffer.alloc(0)]), "INSERT INTO t VALUES ('0x')");
@@ -62,12 +62,12 @@ suite('BigInt parameters survive the frame body exactly', () => {
     assert.equal(bindParams('SELECT ?', [bytes]), `SELECT '${sqlParam(bytes)}'`);
   });
 
-  test('a Date binds as an ISO instant', () => {
+  it('a Date binds as an ISO instant', () => {
     const d = new Date(Date.UTC(2026, 0, 31, 12, 0, 0));
     assert.equal(sqlParam(d), '2026-01-31T12:00:00.000Z');
   });
 
-  test('everything else is unchanged', () => {
+  it('everything else is unchanged', () => {
     assert.equal(sqlParam(null), null);
     assert.equal(sqlParam(true), true);
     assert.equal(sqlParam('x'), 'x');
