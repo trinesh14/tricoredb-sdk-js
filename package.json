@@ -1,6 +1,6 @@
 {
   "name": "tricoredb",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TriCoreDB client for Node.js: native tricore wire protocol, SQL, documents, vectors, graphs and cache, zero runtime dependencies.",
   "keywords": [
     "tricoredb",
@@ -16,6 +16,7 @@
     "typescript"
   ],
   "license": "Apache-2.0",
+  "type": "commonjs",
   "author": "Trinesh Kumar",
   "homepage": "https://github.com/trinesh14/tricoredb-sdk-js#readme",
   "bugs": {
@@ -57,7 +58,8 @@
     "node": ">=18"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "scripts": {
     "build": "node scripts/build.mjs",

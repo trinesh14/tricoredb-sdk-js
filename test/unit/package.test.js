@@ -12,9 +12,9 @@ const root = path.resolve(__dirname, '..', '..');
 const pkg = require('../../package.json');
 const cjs = require('tricoredb');
 
-test('package.json is publishable as tricoredb 0.1.0 with zero runtime dependencies', () => {
+test('package.json is publishable as tricoredb 0.1.1 with zero runtime dependencies', () => {
   assert.equal(pkg.name, 'tricoredb');
-  assert.equal(pkg.version, '0.1.0');
+  assert.equal(pkg.version, '0.1.1');
   assert.equal(pkg.license, 'Apache-2.0');
   // Proven by scripts/docker-matrix.mjs on every major from 18 to 26.
   assert.equal(pkg.engines.node, '>=18');

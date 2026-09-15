@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-15
+
+### Changed
+
+- `package.json` declares `"type": "commonjs"`, so Node.js does not have to
+  detect the module format of the package root. The ESM and CommonJS builds
+  and their exports are unchanged.
+- Publishing is pinned to the public npm registry.
+- The package is managed through the `tricoredb` npm organization.
+
 ## [0.1.0] - 2026-09-15
 
 First release.

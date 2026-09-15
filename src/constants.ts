@@ -2,7 +2,7 @@ export const PROTOCOL = 'tricore';
 export const VERSION = 1;
 
 /** This SDK's own version. Separate from the protocol major `VERSION`. */
-export const SDK_VERSION = '0.1.0';
+export const SDK_VERSION = '0.1.1';
 
 /** Capability bits sent in HELLO; the server replies with the subset it granted. */
 export const FEATURE_CORRELATION_ID = 1;
