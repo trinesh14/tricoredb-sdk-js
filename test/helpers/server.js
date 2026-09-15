@@ -22,8 +22,24 @@ function findBinary(name, envVar) {
 const serverBinary = () => findBinary('tricore-server', 'TRICORE_SERVER_BIN');
 const cliBinary = () => findBinary('tricore', 'TRICORE_CLI_BIN');
 
+/**
+ * An already-running server to test against instead of starting one, e.g. a
+ * TriCoreDB container. Set TRICORE_TEST_HOST (and optionally _PORT, _USER,
+ * _SECRET). The server must use real authentication, since the tests exercise a
+ * wrong-password refusal.
+ */
+const external = process.env.TRICORE_TEST_HOST
+  ? {
+      host: process.env.TRICORE_TEST_HOST,
+      port: Number(process.env.TRICORE_TEST_PORT || 8427),
+      user: process.env.TRICORE_TEST_USER || 'admin',
+      secret: process.env.TRICORE_TEST_SECRET || '',
+    }
+  : null;
+
 /** Why live tests cannot run here, or null when they can. */
 function unavailable({ needCli = false } = {}) {
+  if (external) return null;
   if (!serverBinary()) return 'no tricore-server binary (set TRICORE_SERVER_BIN or TRICORE_REPO)';
   if (needCli && !cliBinary()) return 'no tricore CLI binary (set TRICORE_CLI_BIN or TRICORE_REPO)';
   return null;
@@ -86,6 +102,10 @@ function seedAdmin(dataDir, user, secret) {
  * seeds a real administrator first. Resolves `{ host, port, user, secret, stop }`.
  */
 async function startServer({ mode = 'dev', tls = null } = {}) {
+  if (external) {
+    if (tls) throw new Error('TLS tests start their own server; unset TRICORE_TEST_HOST to run them');
+    return { ...external, pid: null, opts: { ...external }, async stop() {} };
+  }
   const bin = serverBinary();
   if (!bin) throw new Error(unavailable());
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tricore-js-'));

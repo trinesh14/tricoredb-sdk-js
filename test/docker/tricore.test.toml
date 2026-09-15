@@ -1,0 +1,46 @@
+# TriCoreDB config for running this SDK's tests against a container.
+#
+# Identical in posture to the image's shipped config — real password
+# authentication, no dev mode, no default admin — except that every data model
+# is enabled, because the tests exercise all of them. `cluster` is on for
+# admin ping/status. `fsync` is off only to keep test runs fast.
+
+[server]
+host = "0.0.0.0"
+port = 8427
+protocol = "tricore"
+node_id = "sdk-js-test"
+region_id = "local"
+
+[modules]
+sql = true
+document = true
+cache = true
+vector = true
+graph = true
+llm = true
+cluster = true
+
+[resources]
+max_memory_mb = 2048
+foreground_workers = 4
+background_workers = 2
+
+[cache]
+enabled = true
+max_memory_mb = 256
+eviction = "lru"
+
+[storage]
+data_dir = "/var/lib/tricoredb/data"
+fsync = false
+
+[security]
+auth_mode = "password"
+dev_auth = false
+allow_default_admin = false
+
+[logging]
+level = "info"
+to_stderr = true
+to_file = false

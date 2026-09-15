@@ -12,8 +12,9 @@ First release.
 
 ### Added
 
-- Native TriCoreDB protocol client for Node.js 20+, with zero runtime
-  dependencies.
+- Native TriCoreDB protocol client for Node.js 18 and later, with zero runtime
+  dependencies. Tested on every major version from 18 to 26 against a
+  TriCoreDB container.
 - TypeScript source with generated type definitions, published as both ESM and
   CommonJS.
 - SQL: `query()` and `execute()` with server-side `?` / `$n` parameters.

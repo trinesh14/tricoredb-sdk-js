@@ -35,7 +35,7 @@ SQL, documents, vectors, graphs and cache over one native connection.
 
 ## Requirements
 
-- Node.js **20** or later
+- Node.js **18** or later (tested on every major version from 18 to 26)
 - A TriCoreDB server speaking protocol 1.0 (`tricore-server` 0.1.0-rc.1 or later)
 
 ## Installation
@@ -184,6 +184,11 @@ await db.transaction([
 
 If the server does not support session transactions, `begin()` fails with a
 clear error instead of silently running each statement on its own.
+
+A schema change (for example `CREATE TABLE`) that commits while a transaction
+is open aborts that transaction: the next statement fails and asks for
+`ROLLBACK`. Retry the transaction after rolling back. Avoid running migrations
+while transactions are in flight.
 
 ## Connection pool
 
@@ -385,7 +390,7 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 | tricoredb | Node.js | TriCoreDB protocol |
 | --- | --- | --- |
-| 0.1.x | 20+ | 1.0 |
+| 0.1.x | 18 – 26 | 1.0 |
 
 This package follows [semantic versioning](https://semver.org). See
 [CHANGELOG.md](CHANGELOG.md) for release notes.

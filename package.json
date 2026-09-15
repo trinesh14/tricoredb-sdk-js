@@ -54,7 +54,7 @@
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=20"
+    "node": ">=18"
   },
   "publishConfig": {
     "access": "public"
@@ -67,6 +67,7 @@
     "test:unit": "node scripts/test.mjs unit",
     "test:live": "node scripts/test.mjs live",
     "conformance": "node scripts/conformance.mjs",
+    "test:docker": "node scripts/docker-matrix.mjs",
     "pack:dry-run": "node scripts/pack-dry-run.mjs",
     "prepack": "node scripts/build.mjs",
     "prepublishOnly": "npm run typecheck && npm run test:unit"
