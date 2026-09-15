@@ -3,9 +3,9 @@
 Official Node.js client for [TriCoreDB](https://hub.docker.com/r/trinesh14/tricoredb) —
 SQL, documents, vectors, graphs and cache over one native connection.
 
-[![npm](https://img.shields.io/npm/v/tricoredb.svg)](https://www.npmjs.com/package/tricoredb)
-[![node](https://img.shields.io/node/v/tricoredb.svg)](https://nodejs.org)
-[![license](https://img.shields.io/npm/l/tricoredb.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/tricoredb.svg?cacheSeconds=3600)](https://www.npmjs.com/package/tricoredb)
+[![node](https://img.shields.io/node/v/tricoredb.svg?cacheSeconds=86400)](https://nodejs.org)
+[![license](https://img.shields.io/npm/l/tricoredb.svg?cacheSeconds=86400)](LICENSE)
 
 - **Zero runtime dependencies** — nothing to audit but Node.js itself
 - **Written in TypeScript** — full type definitions, generated from the source
