@@ -30,7 +30,9 @@ describe('engine.disabled refusals', () => {
         assert.equal(e.isRedirect, false);
         assert.ok(e.message.includes(serverSays('vector')), 'the server message is kept verbatim');
         assert.match(e.message, /`vector` module is switched off on the server/);
-        assert.match(e.message, /TRICORE_MODULES=sql,vector/);
+        assert.match(e.message, /add `vector` to TRICORE_MODULES/);
+        assert.match(e.message, /TRICORE_MODULES=sql,document,cache,vector/);
+        assert.match(e.message, /TRICORE_MODULES=all/);
         assert.match(e.message, /\[modules\] vector = true/);
         assert.equal(peer.state.requests, 1, 'nothing was retried');
         await db.close();

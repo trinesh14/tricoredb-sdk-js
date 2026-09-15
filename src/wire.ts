@@ -178,12 +178,13 @@ function disabledHint(serverMessage: string | null): string {
   const named = serverMessage ? /module `([a-z_]+)`/.exec(serverMessage) : null;
   const module = named ? named[1] : null;
   const which = module ? `the \`${module}\` module` : 'this data model';
-  const envExample = module ? `TRICORE_MODULES=sql,${module}` : 'TRICORE_MODULES=all';
+  const envExample = module
+    ? `add \`${module}\` to TRICORE_MODULES (for example TRICORE_MODULES=sql,document,cache,${module}), or set TRICORE_MODULES=all,`
+    : 'set TRICORE_MODULES=all, or list the modules you need,';
   const tomlExample = module ? `[modules] ${module} = true` : '[modules] <module> = true';
   return (
     ` [${ENGINE_DISABLED}: ${which} is switched off on the server, and a client cannot enable it. ` +
-    'The server operator must turn it on: for the TriCoreDB container, set the ' +
-    `environment variable ${envExample} (or TRICORE_MODULES=all) and recreate the container; ` +
-    `for a server using a config file, set ${tomlExample} and restart.]`
+    `The server operator must turn it on: for the TriCoreDB container, ${envExample} ` +
+    `and recreate the container; for a server using a config file, set ${tomlExample} and restart.]`
   );
 }

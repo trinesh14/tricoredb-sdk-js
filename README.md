@@ -345,11 +345,11 @@ A server can switch data models off. A client cannot turn one back on, so an
 
 ```text
 invalid request: module `graph` is not enabled (...) (server status: error)
-[engine.disabled: the `graph` module
-is switched off on the server, and a client cannot enable it. The server operator must
-turn it on: for the TriCoreDB container, set the environment variable
-TRICORE_MODULES=sql,graph (or TRICORE_MODULES=all) and recreate the container; for a
-server using a config file, set [modules] graph = true and restart.]
+[engine.disabled: the `graph` module is switched off on the server, and a client cannot
+enable it. The server operator must turn it on: for the TriCoreDB container, add `graph`
+to TRICORE_MODULES (for example TRICORE_MODULES=sql,document,cache,graph), or set
+TRICORE_MODULES=all, and recreate the container; for a server using a config file, set
+[modules] graph = true and restart.]
 ```
 
 ### Cluster redirects
