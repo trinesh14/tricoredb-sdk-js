@@ -1,6 +1,6 @@
 # tricoredb
 
-Official Node.js client for [TriCoreDB](https://github.com/trinesh14/tricore-db) —
+Official Node.js client for [TriCoreDB](https://hub.docker.com/r/trinesh14/tricoredb) —
 SQL, documents, vectors, graphs and cache over one native connection.
 
 [![npm](https://img.shields.io/npm/v/tricoredb.svg)](https://www.npmjs.com/package/tricoredb)
@@ -18,6 +18,7 @@ SQL, documents, vectors, graphs and cache over one native connection.
 
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Running a server](#running-a-server)
 - [Quick start](#quick-start)
 - [Connecting](#connecting)
 - [SQL](#sql)
@@ -36,13 +37,52 @@ SQL, documents, vectors, graphs and cache over one native connection.
 ## Requirements
 
 - Node.js **18** or later (tested on every major version from 18 to 26)
-- A TriCoreDB server speaking protocol 1.0 (`tricore-server` 0.1.0-rc.1 or later)
+- A TriCoreDB server speaking protocol 1.0 (`tricore-server` 0.1.0-rc.1 or later) —
+  see [Running a server](#running-a-server)
 
 ## Installation
 
 ```bash
 npm install tricoredb
 ```
+
+## Running a server
+
+The quickest way is the official Docker image,
+[`trinesh14/tricoredb`](https://hub.docker.com/r/trinesh14/tricoredb).
+
+**Local development** (no TLS, no encryption — this machine only). Set
+`TRICORE_ADMIN_PASSWORD` in your shell first, then create the admin and start
+the server:
+
+```bash
+docker run --rm -v tricoredb-dev:/var/lib/tricoredb -e TRICORE_ADMIN_PASSWORD --entrypoint /usr/local/bin/tricore trinesh14/tricoredb:0.1.0-rc.1-r2 auth init-admin --user admin --password-env TRICORE_ADMIN_PASSWORD --data-dir /var/lib/tricoredb/data
+docker run -d --name tricoredb-dev -p 127.0.0.1:8427:8427 -e TRICORE_TLS=off -e TRICORE_ENCRYPTION=off -e TRICORE_MODULES=all -v tricoredb-dev:/var/lib/tricoredb trinesh14/tricoredb:0.1.0-rc.1-r2
+```
+
+The [Quick start](#quick-start) below then connects as `admin` with that
+password.
+
+**Anything else:** the image's default is **TLS on** and an **encrypted data
+volume**. Follow the quick start on the
+[Docker Hub page](https://hub.docker.com/r/trinesh14/tricoredb) to create the
+certificate and key, then connect with TLS:
+
+```js
+const db = await TriCore.connect({
+  host: 'localhost',
+  port: 8427,
+  user: 'admin',
+  secret: process.env.TRICOREDB_PASSWORD,
+  tls: { caFile: 'tricoredb-ca.crt', serverName: 'localhost' },
+});
+```
+
+Without the `tls` option, a client cannot connect to a TLS server.
+
+`TRICORE_MODULES=all` enables every data model. The image's default is `sql`,
+`document` and `cache`; a call to a disabled model fails with
+[`engine.disabled`](#disabled-data-models).
 
 ## Quick start
 
