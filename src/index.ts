@@ -8,6 +8,7 @@ export {
   MAX_CONTROL_FRAME_SIZE,
   MAX_SUPPORTED_FRAME_VERSION,
   NOT_LEADER,
+  ENGINE_DISABLED,
   DEFAULT_PORT,
 } from './constants.js';
 export { TriCoreError, AuthError, ProtocolError, Timeout, PoolTimeout } from './errors.js';

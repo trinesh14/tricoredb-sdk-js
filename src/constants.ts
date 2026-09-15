@@ -45,6 +45,9 @@ export const CLOSE_TIMEOUT_MS = 2000;
 /** The code a not-leader refusal carries. Branch on this constant, not a literal. */
 export const NOT_LEADER = 'not_leader';
 
+/** The code a refusal carries when the request needs a data model the server has switched off. */
+export const ENGINE_DISABLED = 'engine.disabled';
+
 /** An unknown tag takes the tighter ceiling: the safe direction to be wrong in is "too small". */
 export function maxPayloadFor(tag: number): number {
   return tag === TAG.REQUEST || tag === TAG.RESPONSE ? MAX_FRAME_SIZE : MAX_CONTROL_FRAME_SIZE;

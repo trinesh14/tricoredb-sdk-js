@@ -338,6 +338,19 @@ try {
 | `not_leader` | This cluster node cannot serve the request (see below) |
 | `internal` | Server fault |
 
+### Disabled data models
+
+A server can switch data models off. A client cannot turn one back on, so an
+`engine.disabled` error (`ENGINE_DISABLED`) says who can, and how:
+
+```text
+module `graph` is disabled (server status: error) [engine.disabled: the `graph` module
+is switched off on the server, and a client cannot enable it. The server operator must
+turn it on: for the TriCoreDB container, set the environment variable
+TRICORE_MODULES=sql,graph (or TRICORE_MODULES=all) and recreate the container; for a
+server using a config file, set [modules] graph = true and restart.]
+```
+
 ### Cluster redirects
 
 On a replicated cluster, a follower answers writes with `not_leader`. The error

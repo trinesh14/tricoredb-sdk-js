@@ -29,6 +29,9 @@ First release.
   suite.
 - Typed errors with stable codes (`err.code`) and cluster redirect hints
   (`err.isRedirect`, `err.leaderHint`).
+- A call to a data model that is switched off on the server fails with code
+  `engine.disabled` (exported as `ENGINE_DISABLED`), and the message says the
+  operator must enable the module — for the container, with `TRICORE_MODULES`.
 - TLS and mutual TLS.
 
 ### Security

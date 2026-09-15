@@ -1,4 +1,4 @@
-import { NOT_LEADER } from './constants.js';
+import { ENGINE_DISABLED, NOT_LEADER } from './constants.js';
 import { ProtocolError, TriCoreError } from './errors.js';
 import { DocFilter } from './builders.js';
 import type { Response } from './results.js';
@@ -163,5 +163,27 @@ export function serverRefusal(resp: Response, txnOpen: boolean): TriCoreError {
     }
     message += ']';
   }
+  if (code === ENGINE_DISABLED) {
+    message += disabledHint(messageOf(resp.data));
+  }
   return new TriCoreError(message, { code, leaderHint });
+}
+
+/**
+ * A data model is switched off on the server. Nothing the driver does can turn
+ * it on, so the message says who can, and how, instead of leaving the caller to
+ * guess whether the SDK is missing a feature.
+ */
+function disabledHint(serverMessage: string | null): string {
+  const named = serverMessage ? /module `([a-z_]+)`/.exec(serverMessage) : null;
+  const module = named ? named[1] : null;
+  const which = module ? `the \`${module}\` module` : 'this data model';
+  const envExample = module ? `TRICORE_MODULES=sql,${module}` : 'TRICORE_MODULES=all';
+  const tomlExample = module ? `[modules] ${module} = true` : '[modules] <module> = true';
+  return (
+    ` [${ENGINE_DISABLED}: ${which} is switched off on the server, and a client cannot enable it. ` +
+    'The server operator must turn it on: for the TriCoreDB container, set the ' +
+    `environment variable ${envExample} (or TRICORE_MODULES=all) and recreate the container; ` +
+    `for a server using a config file, set ${tomlExample} and restart.]`
+  );
 }

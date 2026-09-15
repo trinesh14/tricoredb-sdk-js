@@ -29,7 +29,7 @@ test('ESM and CommonJS entry points export the same names and working classes', 
   const names = (m) => Object.keys(m).filter((k) => k !== 'default' && k !== 'module.exports').sort();
   assert.deepEqual(names(esm), names(cjs));
   assert.deepEqual(names(cjs), [
-    'AuthError', 'DEFAULT_PORT', 'DocFilter', 'DocStage', 'FEATURES', 'FEATURE_CORRELATION_ID',
+    'AuthError', 'DEFAULT_PORT', 'DocFilter', 'DocStage', 'ENGINE_DISABLED', 'FEATURES', 'FEATURE_CORRELATION_ID',
     'FEATURE_SERVER_PARAMS', 'FEATURE_SESSION_TXN', 'MAX_CONTROL_FRAME_SIZE', 'MAX_FRAME_SIZE',
     'MAX_SUPPORTED_FRAME_VERSION', 'NOT_LEADER', 'Pool', 'PoolTimeout', 'ProtocolError', 'Response', 'Rows',
     'SDK_VERSION', 'Timeout', 'TriCore', 'TriCoreError', 'bindParams', 'connect', 'encodeBody', 'quoteSql', 'sqlParam',
