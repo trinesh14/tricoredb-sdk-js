@@ -5,11 +5,13 @@ import {
   CLOSE_TIMEOUT_MS,
   DEFAULT_PORT,
   FEATURES,
+  FOLLOW_CONNECT_TIMEOUT_MS,
   FEATURE_CORRELATION_ID,
   FEATURE_SERVER_PARAMS,
   FEATURE_SESSION_TXN,
   HEADER_SIZE,
   MAX_CONTROL_FRAME_SIZE,
+  MAX_LEADER_RETRY_DELAY_MS,
   MAX_SUPPORTED_FRAME_VERSION,
   PROTOCOL,
   TAG,
@@ -102,6 +104,20 @@ interface Waiter {
 
 type Socket = net.Socket | tls.TLSSocket;
 
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** `host:port` or `[v6]:port`, as a `leader_hint` names it; null if it is neither. */
+function splitAddress(address: string): { host: string; port: number } | null {
+  const m = /^\[([^\]]+)\]:(\d+)$/.exec(address) || /^([^:]+):(\d+)$/.exec(address);
+  if (!m) return null;
+  const port = Number(m[2]);
+  return port > 0 && port < 65536 ? { host: m[1] as string, port } : null;
+}
+
+function joinAddress(host: string, port: number): string {
+  return host.includes(':') ? `[${host}]:${port}` : `${host}:${port}`;
+}
+
 /**
  * A connection to a TriCoreDB server.
  *
@@ -117,6 +133,8 @@ export class TriCore {
   private _buf: Buffer = Buffer.alloc(0);
   private _waiters: Waiter[] = [];
   private _fatal: Error | null = null;
+  private _opts: ConnectOptions = {};
+  private _address = '';
 
   /** The server session id, set after authentication. */
   sessionId: string | null = null;
@@ -131,9 +149,26 @@ export class TriCore {
 
   private constructor(socket: Socket) {
     this._socket = socket;
-    socket.on('data', (chunk: Buffer) => this._onData(chunk));
-    socket.on('error', (err: Error) => this._onFatal(new TriCoreError(`socket error: ${err.message}`)));
-    socket.on('close', () => this._onFatal(new ProtocolError('connection closed mid-frame by the server')));
+    this._bind(socket);
+  }
+
+  /** Listen on `socket` for as long as it is this connection's socket. */
+  private _bind(socket: Socket): void {
+    const mine = (): boolean => this._socket === socket;
+    socket.on('data', (chunk: Buffer) => {
+      if (mine()) this._onData(chunk);
+    });
+    socket.on('error', (err: Error) => {
+      if (mine()) this._onFatal(new TriCoreError(`socket error: ${err.message}`));
+    });
+    socket.on('close', () => {
+      if (mine()) this._onFatal(new ProtocolError('connection closed mid-frame by the server'));
+    });
+  }
+
+  /** The `host:port` this connection is talking to. It changes when the driver follows the leader. */
+  get address(): string {
+    return this._address;
   }
 
   /** What the server granted in HELLO_OK, by name. */
@@ -215,6 +250,8 @@ export class TriCore {
       throw err;
     }
     db.readTimeoutMs = readTimeoutMs;
+    db._opts = { ...opts };
+    db._address = joinAddress(host, port);
     return db;
   }
 
@@ -270,12 +307,63 @@ export class TriCore {
     if (this.requestTimeoutMs !== null && this.requestTimeoutMs !== undefined) {
       payload.options = { timeout_ms: this.requestTimeoutMs };
     }
-    const { tag, body } = await this._exchange(TAG.REQUEST, payload);
-    if (tag === TAG.ERROR) throw errorFrame(TriCoreError, body);
-    if (tag !== TAG.RESPONSE) throw new ProtocolError(`expected RESPONSE, got tag ${tag}`);
-    const resp = new Response(body as RawResponse);
-    if (resp.status !== 'ok') throw serverRefusal(resp, this._txnOpen);
-    return resp;
+    const follow = this._opts.followLeader !== false;
+    const retries = Math.max(0, this._opts.leaderRetries ?? 5);
+    let pause = Math.max(0, this._opts.leaderRetryDelayMs ?? 250);
+    for (let retried = 0; ; retried += 1) {
+      const { tag, body } = await this._exchange(TAG.REQUEST, payload);
+      if (tag === TAG.ERROR) throw errorFrame(TriCoreError, body);
+      if (tag !== TAG.RESPONSE) throw new ProtocolError(`expected RESPONSE, got tag ${tag}`);
+      const resp = new Response(body as RawResponse);
+      if (resp.status === 'ok') return resp;
+      // A `not_leader` refusal was applied nowhere, so sending it again cannot
+      // apply it twice. A session transaction belongs to this connection and
+      // cannot move.
+      if (!(follow && resp.isRedirect && !this._txnOpen && retried < retries)) {
+        throw serverRefusal(resp, this._txnOpen, follow ? retried : null);
+      }
+      const hint = resp.leaderHint;
+      if (hint && hint !== this._address && (await this._moveTo(hint))) continue;
+      await sleep(pause);
+      pause = Math.min(Math.max(pause * 2, 1), MAX_LEADER_RETRY_DELAY_MS);
+    }
+  }
+
+  /**
+   * Replace this connection with one to `address`, authenticated as this one
+   * was. False, with this connection untouched, when that fails.
+   */
+  private async _moveTo(address: string): Promise<boolean> {
+    const target = splitAddress(address);
+    if (!target) return false;
+    const o = this._opts;
+    const connectTimeout = o.timeout ? Math.min(o.timeout, FOLLOW_CONNECT_TIMEOUT_MS) : FOLLOW_CONNECT_TIMEOUT_MS;
+    let fresh: TriCore;
+    try {
+      fresh = await TriCore.connect({
+        ...o,
+        host: target.host,
+        port: target.port,
+        timeout: connectTimeout,
+        // The leader's certificate is checked against the name the hint gives.
+        tls: o.tls ? { ...o.tls, serverName: target.host } : o.tls,
+      });
+    } catch {
+      return false;
+    }
+    const socket = fresh._socket as Socket;
+    fresh._socket = null;
+    const old = this._socket;
+    this._socket = socket;
+    this._bind(socket);
+    this._buf = fresh._buf;
+    this._waiters = [];
+    this._fatal = null;
+    this.sessionId = fresh.sessionId;
+    this.grantedFeatures = fresh.grantedFeatures;
+    this._address = address;
+    if (old) old.destroy();
+    return true;
   }
 
   /**

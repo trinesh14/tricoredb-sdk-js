@@ -27,7 +27,8 @@ export class TriCoreError extends Error {
 
   /**
    * The request was right, the node was wrong: true for every `not_leader`
-   * refusal, hint or not. This driver never follows the hint on its own.
+   * refusal, hint or not. With `followLeader` (the default) the driver has
+   * already sent the request again before this reaches you.
    */
   get isRedirect(): boolean {
     return this.code === NOT_LEADER;

@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-17
+
+### Added
+
+- Following the leader: a request refused with `not_leader` is sent again,
+  to the leader the refusal names (over a new connection that replaces the
+  current one) or, while no leader is known, to the same node after a pause.
+  On by default; `followLeader: false` restores the previous behaviour.
+  `leaderRetries` (5) and `leaderRetryDelayMs` (250) bound it. Never inside
+  a session transaction.
+- `OUTCOME_UNKNOWN`: the code of a request a follower handed to the leader
+  and lost the answer to. It is never resent.
+- `TriCore.address`: the `host:port` a connection is talking to.
+
+### Changed
+
+- A `not_leader` error message now says whether the driver already retried.
+
 ## [0.1.1] - 2026-09-15
 
 ### Changed
@@ -51,5 +69,7 @@ First release.
   falling back.
 - A failed login is reported as `AuthError`.
 
-[Unreleased]: https://github.com/trinesh14/tricoredb-sdk-js/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/trinesh14/tricoredb-sdk-js/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/trinesh14/tricoredb-sdk-js/compare/v0.1.1...v0.2.0
+[0.1.1]: https://github.com/trinesh14/tricoredb-sdk-js/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/trinesh14/tricoredb-sdk-js/releases/tag/v0.1.0

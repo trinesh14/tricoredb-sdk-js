@@ -134,6 +134,9 @@ const db = await TriCore.connect(options);
 | `readTimeoutMs` | `number \| null` | `null` | Deadline for each reply. A timed-out connection is unusable afterwards. |
 | `tls` | `TlsOptions \| null` | — | Enables TLS. See [TLS](#tls). |
 | `features` | `number` | `FEATURES` | Capabilities to request during the handshake |
+| `followLeader` | `boolean` | `true` | Send a `not_leader` refusal again, to the leader (see [Cluster redirects](#cluster-redirects)) |
+| `leaderRetries` | `number` | `5` | How many times a refused request is sent again |
+| `leaderRetryDelayMs` | `number` | `250` | First pause before asking again; doubles up to 2000 |
 
 ```js
 await db.ping();               // round-trip check
@@ -376,6 +379,7 @@ try {
 | `limit.exceeded` | A resource limit was reached |
 | `state.conflict` | Transaction conflict — retrying the transaction may succeed |
 | `not_leader` | This cluster node cannot serve the request (see below) |
+| `outcome_unknown` | Handed to the leader, answer lost: may have been applied |
 | `internal` | Server fault |
 
 ### Disabled data models
@@ -394,20 +398,41 @@ TRICORE_MODULES=all, and recreate the container; for a server using a config fil
 
 ### Cluster redirects
 
-On a replicated cluster, a follower answers writes with `not_leader`. The error
-tells you where to go instead:
+On a replicated cluster, only the leader accepts writes. A follower refuses
+with `not_leader`, and the driver handles that itself (`followLeader`, on by
+default):
+
+- when the refusal names the leader, the driver opens a connection there,
+  authenticated as before, sends the request again, and keeps using that
+  connection;
+- while an election is in progress (no leader named), it waits and asks the
+  same node again, pausing 250 ms, then 500 ms, up to 2 s;
+- it gives up after `leaderRetries` (5) and throws the last refusal.
+
+This is safe because a `not_leader` refusal was applied nowhere. The driver
+never resends a request inside a session transaction (the transaction belongs
+to its connection), and never resends `outcome_unknown` (`OUTCOME_UNKNOWN`):
+a follower handed that request to the leader and lost the answer, so it may
+have been applied. Check before sending it again.
+
+Following uses the address the server reports, so it must be reachable from
+your application; with TLS, the leader's certificate is checked against that
+host name. When it is not reachable (for example through a single port
+forward), the driver keeps the connection it has and waits, and the error
+explains what happened. To handle redirects yourself:
 
 ```js
-catch (err) {
+const db = await TriCore.connect({ host, user, secret, followLeader: false });
+try {
+  await db.execute('INSERT INTO t VALUES (1)');
+} catch (err) {
   if (err.isRedirect) {
     console.log(err.leaderHint); // 'host:port', or null while an election is in progress
   }
 }
 ```
 
-The driver does not reconnect automatically: whether that address is reachable
-from your network, and whether the operation is safe to repeat, is your
-application's decision. When `leaderHint` is `null`, wait and retry.
+`db.address` is the `host:port` a connection is talking to now.
 
 ## TLS
 

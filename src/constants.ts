@@ -2,7 +2,7 @@ export const PROTOCOL = 'tricore';
 export const VERSION = 1;
 
 /** This SDK's own version. Separate from the protocol major `VERSION`. */
-export const SDK_VERSION = '0.1.1';
+export const SDK_VERSION = '0.2.0';
 
 /** Capability bits sent in HELLO; the server replies with the subset it granted. */
 export const FEATURE_CORRELATION_ID = 1;
@@ -44,6 +44,17 @@ export const CLOSE_TIMEOUT_MS = 2000;
 
 /** The code a not-leader refusal carries. Branch on this constant, not a literal. */
 export const NOT_LEADER = 'not_leader';
+
+/**
+ * The code of a request the server handed to the leader and never heard back
+ * about: it may or may not have been applied, so the driver does not resend it.
+ */
+export const OUTCOME_UNKNOWN = 'outcome_unknown';
+
+/** Following the leader: the longest pause between attempts. */
+export const MAX_LEADER_RETRY_DELAY_MS = 2000;
+/** Following the leader: the connect deadline for the new connection. */
+export const FOLLOW_CONNECT_TIMEOUT_MS = 3000;
 
 /** The code a refusal carries when the request needs a data model the server has switched off. */
 export const ENGINE_DISABLED = 'engine.disabled';

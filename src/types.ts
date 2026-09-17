@@ -56,6 +56,18 @@ export interface ConnectOptions {
   tls?: TlsOptions | null;
   /** Capability bitmap announced in HELLO. Defaults to `FEATURES`. */
   features?: number;
+  /**
+   * Send a request again when the server refuses it with `not_leader`
+   * (default `true`): to the leader the refusal names, over a new connection
+   * that replaces this one, or, while no leader is known, to the same node
+   * after a pause. Safe because a `not_leader` refusal was applied nowhere.
+   * Never inside a session transaction.
+   */
+  followLeader?: boolean;
+  /** How many times a refused request is sent again. Default 5. */
+  leaderRetries?: number;
+  /** The first pause, in milliseconds, before sending again; it doubles up to 2000. Default 250. */
+  leaderRetryDelayMs?: number;
 }
 
 export interface PoolOptions extends ConnectOptions {

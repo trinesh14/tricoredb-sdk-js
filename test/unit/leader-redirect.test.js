@@ -21,7 +21,7 @@ function notLeader(requestId, leader) {
 
 test('a not_leader refusal is a typed error with code, leaderHint and isRedirect', async () => {
   await withPeer(scriptedPeer((rid) => notLeader(rid, LEADER_ADDR)), async (peer) => {
-    const db = await TriCore.connect({ host: '127.0.0.1', port: peer.port });
+    const db = await TriCore.connect({ host: '127.0.0.1', port: peer.port, followLeader: false });
     const e = await db.execute("INSERT INTO t VALUES (1, 'ada')").then(
       () => assert.fail('the write resolved'),
       (err) => err,
@@ -41,13 +41,14 @@ test('a not_leader refusal is a typed error with code, leaderHint and isRedirect
 
 test('mid-election there is no hint, and the refusal is still a redirect', async () => {
   await withPeer(scriptedPeer((rid) => notLeader(rid, null)), async (peer) => {
-    const db = await TriCore.connect({ host: '127.0.0.1', port: peer.port });
+    const db = await TriCore.connect({ host: '127.0.0.1', port: peer.port, followLeader: false });
     const e = await db.execute('INSERT INTO t VALUES (1)').catch((err) => err);
     assert.ok(e instanceof TriCoreError);
     assert.equal(e.code, 'not_leader');
     assert.equal(e.leaderHint, null);
     assert.equal(e.isRedirect, true);
-    assert.match(e.message, /wait and try again/);
+    assert.match(e.message, /no address to name/);
+    assert.match(e.message, /followLeader: false/);
     assert.equal(peer.state.requests, 1);
     await db.close();
   });
@@ -87,6 +88,7 @@ test('a redirect inside an open session transaction says the block is over and r
     const e = await db.execute("INSERT INTO t VALUES (1, 'ada')").catch((err) => err);
     assert.equal(e.code, 'not_leader');
     assert.match(e.message, /session transaction is over/);
+    assert.match(e.message, /does not send it anywhere else/);
     assert.equal(peer.state.connections, 1);
     assert.equal(peer.state.requests, 2, 'BEGIN + the statement, nothing more');
     await db.close();
@@ -95,7 +97,7 @@ test('a redirect inside an open session transaction says the block is over and r
 
 test('a coded refusal does not retire a pooled connection', async () => {
   await withPeer(scriptedPeer((rid) => notLeader(rid, LEADER_ADDR)), async (peer) => {
-    const pool = new Pool({ host: '127.0.0.1', port: peer.port, size: 2 });
+    const pool = new Pool({ host: '127.0.0.1', port: peer.port, size: 2, followLeader: false });
     await assert.rejects(pool.use((db) => db.execute('INSERT INTO t VALUES (1)')), TriCoreError);
     const stats = pool.stats();
     assert.equal(stats.created, 1, 'the connection was kept');

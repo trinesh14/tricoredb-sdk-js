@@ -142,20 +142,31 @@ export function errorFrame(
   return new Ctor(errorText(body), { code });
 }
 
-/** The typed error for a response whose status is not `ok`. Never re-sends anywhere. */
-export function serverRefusal(resp: Response, txnOpen: boolean): TriCoreError {
+/**
+ * The typed error for a response whose status is not `ok`. `retried` is how
+ * many times the driver already sent it again, or `null` when following the
+ * leader is off.
+ */
+export function serverRefusal(resp: Response, txnOpen: boolean, retried: number | null = null): TriCoreError {
   let message = `${messageOf(resp.data) || 'request failed'} (server status: ${resp.status})`;
   const code = resp.errorCode;
   const leaderHint = resp.leaderHint;
   if (code === NOT_LEADER) {
     message += leaderHint
       ? ` [${NOT_LEADER}: this node is not the leader; the leader serves clients at ` +
-        `\`${leaderHint}\`. This driver does not follow the hint on its own — a new connection ` +
-        'authenticates again, and only you know whether that address is reachable from here. ' +
-        'Send this request there.'
+        `\`${leaderHint}\`.`
       : ` [${NOT_LEADER}: this node is not the leader and there is no address to name (an ` +
         'election is in progress, this node has no [raft] configured, or the leader has no ' +
-        'address in [[raft.peers]]). There is nowhere to redirect to: wait and try again.';
+        'address in [[raft.peers]]).';
+    if (txnOpen) {
+      message += ' Inside a session transaction the driver does not send it anywhere else.';
+    } else if (retried === null) {
+      message += ' Following the leader is off (followLeader: false): send this request there yourself.';
+    } else if (retried > 0) {
+      message +=
+        ` The driver sent it again ${retried} time(s) and was refused each time` +
+        (leaderHint ? '; check that this address is reachable from here.' : '; try again later.');
+    }
     if (txnOpen) {
       message +=
         ' The open session transaction is over: it is bound to this connection and ' +
