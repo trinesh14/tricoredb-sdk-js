@@ -1,9 +1,13 @@
 import type {
   AccumulatorValue,
   AggregateStageValue,
+  BulkOpValue,
+  CacheExpiryValue,
   DocumentFilterValue,
+  DocumentUpdateSpec,
   GroupKeyValue,
   Json,
+  JsonObject,
 } from './types.js';
 
 /**
@@ -23,6 +27,51 @@ export const DocFilter = {
   contains: (field: string, value: Json): DocumentFilterValue => ({ Contains: { field, value } }),
   and: (...filters: (DocumentFilterValue | DocumentFilterValue[])[]): DocumentFilterValue => ({
     And: filters.flat(),
+  }),
+};
+
+/** What `cacheSetIf` and `cacheGetEx` do with a key's expiry. */
+export const CacheExpiry = {
+  /** Leave the deadline as it is (`KEEPTTL`). */
+  keep: (): CacheExpiryValue => 'Keep',
+  /** Remove the deadline, as a plain `SET` and `PERSIST` do. */
+  clear: (): CacheExpiryValue => 'Clear',
+  /** Expire this many milliseconds from now. */
+  set: (ttlMs: number): CacheExpiryValue => ({ Set: { ttl_ms: ttlMs } }),
+};
+
+/**
+ * Builders for the items of `documentBulkWrite`. The items apply in order as
+ * one atomic batch, and a later item sees the effect of an earlier one.
+ */
+export const DocBulk = {
+  /** Insert a document; the id is generated when omitted. */
+  insert: (document: JsonObject, opts: { id?: string | null } = {}): BulkOpValue => ({
+    Insert: { id: opts.id ?? null, document },
+  }),
+  /** Apply `{ set, inc }` to one document. `expectedVersion` needs a versioned collection. */
+  updateOne: (
+    id: string,
+    update: DocumentUpdateSpec,
+    opts: { upsert?: boolean; expectedVersion?: number | null } = {},
+  ): BulkOpValue => ({
+    UpdateOne: {
+      id,
+      update: { set: (update || {}).set ?? {}, inc: (update || {}).inc ?? {} },
+      upsert: !!opts.upsert,
+      expected_version: opts.expectedVersion ?? null,
+    },
+  }),
+  /** Swap a document's whole body. */
+  replace: (
+    id: string,
+    document: JsonObject,
+    opts: { upsert?: boolean; expectedVersion?: number | null } = {},
+  ): BulkOpValue => ({
+    Replace: { id, document, upsert: !!opts.upsert, expected_version: opts.expectedVersion ?? null },
+  }),
+  delete: (id: string, opts: { expectedVersion?: number | null } = {}): BulkOpValue => ({
+    Delete: { id, expected_version: opts.expectedVersion ?? null },
   }),
 };
 

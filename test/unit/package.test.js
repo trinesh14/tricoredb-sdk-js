@@ -12,9 +12,9 @@ const root = path.resolve(__dirname, '..', '..');
 const pkg = require('../../package.json');
 const cjs = require('tricoredb');
 
-test('package.json is publishable as tricoredb 0.2.0 with zero runtime dependencies', () => {
+test('package.json is publishable as tricoredb 0.3.0 with zero runtime dependencies', () => {
   assert.equal(pkg.name, 'tricoredb');
-  assert.equal(pkg.version, '0.2.0');
+  assert.equal(pkg.version, '0.3.0');
   assert.equal(pkg.license, 'Apache-2.0');
   // Proven by scripts/docker-matrix.mjs on every major from 18 to 26.
   assert.equal(pkg.engines.node, '>=18');
@@ -29,7 +29,7 @@ test('ESM and CommonJS entry points export the same names and working classes', 
   const names = (m) => Object.keys(m).filter((k) => k !== 'default' && k !== 'module.exports').sort();
   assert.deepEqual(names(esm), names(cjs));
   assert.deepEqual(names(cjs), [
-    'AuthError', 'DEFAULT_PORT', 'DocFilter', 'DocStage', 'ENGINE_DISABLED', 'FEATURES', 'FEATURE_CORRELATION_ID',
+    'AuthError', 'CacheExpiry', 'DEFAULT_PORT', 'DocBulk', 'DocFilter', 'DocStage', 'ENGINE_DISABLED', 'FEATURES', 'FEATURE_CORRELATION_ID',
     'FEATURE_SERVER_PARAMS', 'FEATURE_SESSION_TXN', 'MAX_CONTROL_FRAME_SIZE', 'MAX_FRAME_SIZE',
     'MAX_SUPPORTED_FRAME_VERSION', 'NOT_LEADER', 'OUTCOME_UNKNOWN', 'Pool', 'PoolTimeout', 'ProtocolError', 'Response', 'Rows',
     'SDK_VERSION', 'Timeout', 'TriCore', 'TriCoreError', 'bindParams', 'connect', 'encodeBody', 'quoteSql', 'sqlParam',

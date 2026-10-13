@@ -27,40 +27,111 @@ import {
   buffers,
   byteArrays,
   bytes,
+  cacheEntries,
   cacheValue,
+  cacheValues,
   documentsData,
   errorFrame,
+  freshValue,
+  given,
   jsonData,
   kindOf,
   llmSource,
   numbers,
   pairs,
   rendered,
+  scoreBound,
+  scoredMembers,
+  scoredResults,
+  searchOptions,
   serverRefusal,
   streamEntries,
   textPairs,
+  vectorList,
 } from './wire.js';
 import type {
   AggregateStageValue,
+  BulkOpValue,
+  CacheBitOp,
   CacheBytes,
+  CacheExpireAtResult,
+  CacheExpiryValue,
+  CacheFreshRead,
+  CacheFreshWrite,
   CacheKeyInfo,
+  CacheListEnd,
+  CacheListPop,
+  CacheLock,
+  CacheLockRenewal,
+  CacheNamespaceLimit,
+  CacheOpResult,
+  CacheOpValue,
+  CachePollResult,
+  CacheScoreBound,
+  CacheScoredMember,
+  CacheScoredMemberInput,
+  CacheScriptLoaded,
+  CacheScriptRun,
+  CacheSetCondition,
+  CacheStats,
   CacheStreamEntry,
+  CacheSwapResult,
+  CacheTrimResult,
+  CacheWarmResult,
+  CacheZAddResult,
   ConnectOptions,
   DocumentAnalyzeResult,
+  DocumentBulkResult,
+  DocumentCollectionOptions,
+  DocumentCommitResult,
+  DocumentExplain,
   DocumentFilterValue,
   DocumentIndexInfo,
+  DocumentOptionsUpdate,
+  DocumentPurgeResult,
+  DocumentRebuildResult,
+  DocumentRenameResult,
+  DocumentReplaceResult,
+  DocumentReturn,
+  DocumentSortKey,
   DocumentUpdateSpec,
   GrantedFeatures,
+  GraphAllPaths,
+  GraphBatchResult,
+  GraphCentrality,
+  GraphCentralityMeasure,
+  GraphCommitResult,
+  GraphCommunities,
+  GraphComponents,
+  GraphConsistency,
+  GraphConstraintKind,
+  GraphConstraintTarget,
+  GraphCopyResult,
+  GraphCycle,
+  GraphDfsResult,
   GraphDirection,
   GraphEdge,
+  GraphEdgeInput,
   GraphEdgePage,
+  GraphFoundNodes,
   GraphNeighbor,
   GraphNode,
+  GraphNodeInput,
   GraphNodePage,
+  GraphPageRank,
   GraphPath,
+  GraphPaths,
   GraphQueryResult,
+  GraphRemoveResult,
+  GraphSchemaInfo,
+  GraphSchemaObjects,
+  GraphSimilarity,
+  GraphStats,
+  GraphSubgraph,
   GraphTraversal,
+  GraphTriangles,
   GraphWeightedPath,
+  GraphWriteResult,
   Json,
   JsonObject,
   LlmOptions,
@@ -68,12 +139,27 @@ import type {
   SqlValue,
   TransactionStatement,
   TransactionSummary,
+  VectorAlias,
+  VectorCollectionConfig,
   VectorCollectionInfo,
+  VectorEmbedding,
+  VectorExample,
+  VectorExampleHits,
   VectorHits,
+  VectorIndexStats,
   VectorItem,
   VectorMetric,
+  VectorMultiHits,
   VectorPage,
+  VectorPartitions,
   VectorQuantization,
+  VectorRebuildResult,
+  VectorRecall,
+  VectorRenameResult,
+  VectorSearchHit,
+  VectorSearchOptions,
+  VectorTextItem,
+  VectorUpsertItem,
 } from './types.js';
 
 const PROCESS_STAMP = (() => {
@@ -146,6 +232,13 @@ export class TriCore {
   lastRequestId: string | null = null;
   /** The feature bitmap the server granted in HELLO_OK. */
   grantedFeatures = 0;
+  /**
+   * The open document or graph transaction, or null. While it is set, every
+   * request on this connection carries it as `options.txn` and so runs inside
+   * that transaction. `documentBeginTransaction` and `graphBeginTransaction`
+   * set it; the matching commit and rollback clear it.
+   */
+  txn: string | null = null;
 
   private constructor(socket: Socket) {
     this._socket = socket;
@@ -304,9 +397,12 @@ export class TriCore {
     const requestId = `js-${this._ridPrefix}-${this._rid}`;
     this.lastRequestId = requestId;
     const payload: Record<string, unknown> = { request_id: requestId, database, op };
+    const options: Record<string, unknown> = {};
     if (this.requestTimeoutMs !== null && this.requestTimeoutMs !== undefined) {
-      payload.options = { timeout_ms: this.requestTimeoutMs };
+      options.timeout_ms = this.requestTimeoutMs;
     }
+    if (this.txn !== null && this.txn !== undefined) options.txn = this.txn;
+    if (Object.keys(options).length > 0) payload.options = options;
     const follow = this._opts.followLeader !== false;
     const retries = Math.max(0, this._opts.leaderRetries ?? 5);
     let pause = Math.max(0, this._opts.leaderRetryDelayMs ?? 250);
@@ -319,7 +415,7 @@ export class TriCore {
       // A `not_leader` refusal was applied nowhere, so sending it again cannot
       // apply it twice. A session transaction belongs to this connection and
       // cannot move.
-      if (!(follow && resp.isRedirect && !this._txnOpen && retried < retries)) {
+      if (!(follow && resp.isRedirect && !this._txnOpen && this.txn === null && retried < retries)) {
         throw serverRefusal(resp, this._txnOpen, follow ? retried : null);
       }
       const hint = resp.leaderHint;
@@ -675,6 +771,599 @@ export class TriCore {
     return jsonData(resp, 'cache xtrim').trimmed;
   }
 
+  // -- cache: server 0.1.0-rc.3 and later ---------------------------------------
+
+  /** Write a value that reads as fresh for `freshMs`, then as stale until its TTL (if any) ends. */
+  async cacheSetFresh(
+    namespace: string,
+    key: string,
+    value: CacheBytes,
+    freshMs: number,
+    ttlMs: number | null = null,
+    database = 'main',
+  ): Promise<CacheFreshWrite> {
+    const resp = await this.request(
+      { Cache: { SetFresh: { namespace, key, value: bytes(value, 'value'), fresh_ms: freshMs, ttl_ms: ttlMs } } },
+      database,
+    );
+    const j = jsonData(resp, 'cache setFresh');
+    return { set: !!j.set, freshUntilMs: j.freshUntilMs };
+  }
+
+  /**
+   * Read with stale-while-revalidate and stampede protection. On a `miss`,
+   * `lease` is true for the one caller (`owner`) that should compute the
+   * value; on `stale`, `refresh` is true for the one that should refresh it.
+   */
+  async cacheGetFresh(namespace: string, key: string, owner: string, leaseMs: number, database = 'main'): Promise<CacheFreshRead> {
+    const resp = await this.request({ Cache: { GetFresh: { namespace, key, owner, lease_ms: leaseMs } } }, database);
+    const j = jsonData(resp, 'cache getFresh');
+    return {
+      state: j.state,
+      value: freshValue(j),
+      refresh: !!j.refresh,
+      lease: !!j.lease,
+      retryAfterMs: typeof j.retryAfterMs === 'number' ? j.retryAfterMs : null,
+    };
+  }
+
+  /** Negative caching: remember for `ttlMs` that the source has no value for `key`. */
+  async cacheSetMissing(namespace: string, key: string, ttlMs: number, database = 'main'): Promise<void> {
+    await this.request({ Cache: { SetMissing: { namespace, key, ttl_ms: ttlMs } } }, database);
+  }
+
+  /** Write the `[key, value]` entries that are not already cached, leaving live values alone. */
+  async cacheWarm(
+    namespace: string,
+    entries: ReadonlyArray<readonly [string, CacheBytes]>,
+    ttlMs: number | null = null,
+    database = 'main',
+  ): Promise<CacheWarmResult> {
+    const resp = await this.request(
+      { Cache: { Warm: { namespace, entries: cacheEntries(entries, 'entries'), ttl_ms: ttlMs } } },
+      database,
+    );
+    const j = jsonData(resp, 'cache warm');
+    return { written: j.written, alreadyCached: j.alreadyCached };
+  }
+
+  /** Many values in one round trip, positionally: null where a key is absent. Not a snapshot. */
+  async cacheMGet(namespace: string, keys: ReadonlyArray<string>, database = 'main'): Promise<(Buffer | null)[]> {
+    return cacheValues(await this.request({ Cache: { MGet: { namespace, keys } } }, database), 'mget');
+  }
+
+  /** Write `[key, value]` entries as one batch; resolves with how many. A repeated key is refused. */
+  async cacheMSet(
+    namespace: string,
+    entries: ReadonlyArray<readonly [string, CacheBytes]>,
+    ttlMs: number | null = null,
+    database = 'main',
+  ): Promise<number> {
+    const resp = await this.request(
+      { Cache: { MSet: { namespace, entries: cacheEntries(entries, 'entries'), ttl_ms: ttlMs } } },
+      database,
+    );
+    return jsonData(resp, 'cache mset').set;
+  }
+
+  /**
+   * Write under a condition, with explicit control of the expiry (see
+   * `CacheExpiry`). False means the condition was not met, not that it failed.
+   */
+  async cacheSetIf(
+    namespace: string,
+    key: string,
+    value: CacheBytes,
+    condition: CacheSetCondition,
+    expiry: CacheExpiryValue = 'Clear',
+    database = 'main',
+  ): Promise<boolean> {
+    const resp = await this.request(
+      { Cache: { SetIf: { namespace, key, value: bytes(value, 'value'), condition, expiry } } },
+      database,
+    );
+    return !!jsonData(resp, 'cache setIf').set;
+  }
+
+  /** Add scored members to a sorted set, or re-score ones already there. A NaN score is refused. */
+  async cacheZAdd(
+    namespace: string,
+    key: string,
+    members: ReadonlyArray<CacheScoredMemberInput>,
+    database = 'main',
+  ): Promise<CacheZAddResult> {
+    const resp = await this.request(
+      { Cache: { ZAdd: { namespace, key, members: scoredMembers(members, 'members') } } },
+      database,
+    );
+    const j = jsonData(resp, 'cache zadd');
+    return { added: j.added, updated: j.updated };
+  }
+
+  async cacheZRem(namespace: string, key: string, members: ReadonlyArray<CacheBytes>, database = 'main'): Promise<number> {
+    const resp = await this.request(
+      { Cache: { ZRem: { namespace, key, members: byteArrays(members, 'members') } } },
+      database,
+    );
+    return jsonData(resp, 'cache zrem').removed;
+  }
+
+  /** The member's score, or null when it is not in the set. */
+  async cacheZScore(namespace: string, key: string, member: CacheBytes, database = 'main'): Promise<number | null> {
+    const resp = await this.request(
+      { Cache: { ZScore: { namespace, key, member: bytes(member, 'member') } } },
+      database,
+    );
+    const score = jsonData(resp, 'cache zscore').score;
+    return typeof score === 'number' ? score : null;
+  }
+
+  async cacheZCard(namespace: string, key: string, database = 'main'): Promise<number> {
+    const resp = await this.request({ Cache: { ZCard: { namespace, key } } }, database);
+    return jsonData(resp, 'cache zcard').cardinality;
+  }
+
+  /** The member's position, or null when absent. `rev` counts from the high-scoring end. */
+  async cacheZRank(
+    namespace: string,
+    key: string,
+    member: CacheBytes,
+    opts: { rev?: boolean } = {},
+    database = 'main',
+  ): Promise<number | null> {
+    const resp = await this.request(
+      { Cache: { ZRank: { namespace, key, member: bytes(member, 'member'), rev: !!opts.rev } } },
+      database,
+    );
+    const rank = jsonData(resp, 'cache zrank').rank;
+    return typeof rank === 'number' ? rank : null;
+  }
+
+  /** Members by rank, `start..=stop` inclusive; negative indices count from the end. */
+  async cacheZRange(
+    namespace: string,
+    key: string,
+    start: number,
+    stop: number,
+    opts: { rev?: boolean } = {},
+    database = 'main',
+  ): Promise<Buffer[]> {
+    const resp = await this.request(
+      { Cache: { ZRange: { namespace, key, start, stop, rev: !!opts.rev, with_scores: false } } },
+      database,
+    );
+    return buffers(jsonData(resp, 'cache zrange').members);
+  }
+
+  /** `cacheZRange`, with each member's score. */
+  async cacheZRangeWithScores(
+    namespace: string,
+    key: string,
+    start: number,
+    stop: number,
+    opts: { rev?: boolean } = {},
+    database = 'main',
+  ): Promise<CacheScoredMember[]> {
+    const resp = await this.request(
+      { Cache: { ZRange: { namespace, key, start, stop, rev: !!opts.rev, with_scores: true } } },
+      database,
+    );
+    return scoredResults(jsonData(resp, 'cache zrange').members);
+  }
+
+  /**
+   * Members by score between two bounds: a number (inclusive) or
+   * `{ value, exclusive }`. `-Infinity` and `Infinity` leave an end open.
+   * `limit` is `[offset, count]`, applied after the range is selected.
+   */
+  async cacheZRangeByScore(
+    namespace: string,
+    key: string,
+    min: number | CacheScoreBound,
+    max: number | CacheScoreBound,
+    opts: { rev?: boolean; limit?: readonly [number, number] | null } = {},
+    database = 'main',
+  ): Promise<Buffer[]> {
+    const resp = await this.request(this._zRangeByScore(namespace, key, min, max, opts, false), database);
+    return buffers(jsonData(resp, 'cache zrangeByScore').members);
+  }
+
+  /** `cacheZRangeByScore`, with each member's score. */
+  async cacheZRangeByScoreWithScores(
+    namespace: string,
+    key: string,
+    min: number | CacheScoreBound,
+    max: number | CacheScoreBound,
+    opts: { rev?: boolean; limit?: readonly [number, number] | null } = {},
+    database = 'main',
+  ): Promise<CacheScoredMember[]> {
+    const resp = await this.request(this._zRangeByScore(namespace, key, min, max, opts, true), database);
+    return scoredResults(jsonData(resp, 'cache zrangeByScore').members);
+  }
+
+  private _zRangeByScore(
+    namespace: string,
+    key: string,
+    min: number | CacheScoreBound,
+    max: number | CacheScoreBound,
+    opts: { rev?: boolean; limit?: readonly [number, number] | null },
+    withScores: boolean,
+  ): Record<string, unknown> {
+    return {
+      Cache: {
+        ZRangeByScore: {
+          namespace,
+          key,
+          min: scoreBound(min, 'min'),
+          max: scoreBound(max, 'max'),
+          rev: !!opts.rev,
+          with_scores: withScores,
+          limit: opts.limit ? [opts.limit[0], opts.limit[1]] : null,
+        },
+      },
+    };
+  }
+
+  /** Add `by` to a member's score, creating it at `by` when absent; resolves with the new score. */
+  async cacheZIncrBy(namespace: string, key: string, member: CacheBytes, by: number, database = 'main'): Promise<number> {
+    const resp = await this.request(
+      { Cache: { ZIncrBy: { namespace, key, member: bytes(member, 'member'), by } } },
+      database,
+    );
+    return jsonData(resp, 'cache zincrby').score;
+  }
+
+  /**
+   * Take a lease on a lock, or refresh one `owner` already holds (same token).
+   * Pass the fencing `token` to the resource the lock protects.
+   */
+  async cacheLockAcquire(namespace: string, key: string, owner: string, ttlMs: number, database = 'main'): Promise<CacheLock> {
+    const resp = await this.request({ Cache: { LockAcquire: { namespace, key, owner, ttl_ms: ttlMs } } }, database);
+    const j = jsonData(resp, 'cache lockAcquire');
+    return {
+      acquired: !!j.acquired,
+      token: typeof j.token === 'number' ? j.token : null,
+      holder: typeof j.holder === 'string' ? j.holder : null,
+      expiresAtMs: typeof j.expiresAtMs === 'number' ? j.expiresAtMs : null,
+    };
+  }
+
+  /** Extend a lease still held. Not renewed once it has lapsed, even if nobody else took the lock. */
+  async cacheLockRenew(namespace: string, key: string, owner: string, ttlMs: number, database = 'main'): Promise<CacheLockRenewal> {
+    const resp = await this.request({ Cache: { LockRenew: { namespace, key, owner, ttl_ms: ttlMs } } }, database);
+    const j = jsonData(resp, 'cache lockRenew');
+    return {
+      renewed: !!j.renewed,
+      token: typeof j.token === 'number' ? j.token : null,
+      expiresAtMs: typeof j.expiresAtMs === 'number' ? j.expiresAtMs : null,
+    };
+  }
+
+  /** Give up a lock. Only the current, live holder can; false otherwise. */
+  async cacheLockRelease(namespace: string, key: string, owner: string, database = 'main'): Promise<boolean> {
+    const resp = await this.request({ Cache: { LockRelease: { namespace, key, owner } } }, database);
+    return !!jsonData(resp, 'cache lockRelease').released;
+  }
+
+  /** Set one bit, numbered from the most significant bit of byte 0; resolves with its old value (0 or 1). */
+  async cacheSetBit(namespace: string, key: string, offset: number, value: boolean, database = 'main'): Promise<number> {
+    const resp = await this.request({ Cache: { SetBit: { namespace, key, offset, value: !!value } } }, database);
+    return jsonData(resp, 'cache setBit').previous;
+  }
+
+  /** One bit (0 or 1). Past the end of the value, and on a missing key, every bit is 0. */
+  async cacheGetBit(namespace: string, key: string, offset: number, database = 'main'): Promise<number> {
+    const resp = await this.request({ Cache: { GetBit: { namespace, key, offset } } }, database);
+    return jsonData(resp, 'cache getBit').bit;
+  }
+
+  /** Count the set bits, optionally within a `[start, end]` range of **bytes** (negative counts from the end). */
+  async cacheBitCount(
+    namespace: string,
+    key: string,
+    range: readonly [number, number] | null = null,
+    database = 'main',
+  ): Promise<number> {
+    const resp = await this.request(
+      { Cache: { BitCount: { namespace, key, range: range ? [range[0], range[1]] : null } } },
+      database,
+    );
+    return jsonData(resp, 'cache bitCount').count;
+  }
+
+  /** The position of the first bit equal to `bit`, optionally within a byte range, or -1. */
+  async cacheBitPos(
+    namespace: string,
+    key: string,
+    bit: boolean,
+    range: readonly [number, number] | null = null,
+    database = 'main',
+  ): Promise<number> {
+    const resp = await this.request(
+      { Cache: { BitPos: { namespace, key, bit: !!bit, range: range ? [range[0], range[1]] : null } } },
+      database,
+    );
+    return jsonData(resp, 'cache bitPos').position;
+  }
+
+  /** Combine values bitwise into `dest`; resolves with the result's length in bytes. */
+  async cacheBitOp(namespace: string, op: CacheBitOp, dest: string, keys: ReadonlyArray<string>, database = 'main'): Promise<number> {
+    const resp = await this.request({ Cache: { BitOp: { namespace, op, dest, keys } } }, database);
+    return jsonData(resp, 'cache bitOp').length;
+  }
+
+  /** Add elements to a HyperLogLog; resolves with whether its estimate may have moved. */
+  async cachePfAdd(namespace: string, key: string, elements: ReadonlyArray<CacheBytes>, database = 'main'): Promise<boolean> {
+    const resp = await this.request(
+      { Cache: { PfAdd: { namespace, key, elements: byteArrays(elements, 'elements') } } },
+      database,
+    );
+    return !!jsonData(resp, 'cache pfAdd').changed;
+  }
+
+  /** Estimated distinct elements; with several keys, of their union. */
+  async cachePfCount(namespace: string, keys: ReadonlyArray<string>, database = 'main'): Promise<number> {
+    const resp = await this.request({ Cache: { PfCount: { namespace, keys } } }, database);
+    return jsonData(resp, 'cache pfCount').count;
+  }
+
+  /** Merge HyperLogLogs into `dest`, which counts as a source when it already exists. */
+  async cachePfMerge(namespace: string, dest: string, sources: ReadonlyArray<string>, database = 'main'): Promise<void> {
+    await this.request({ Cache: { PfMerge: { namespace, dest, sources } } }, database);
+  }
+
+  /** Atomically move one element between list ends; null when `source` is empty. */
+  async cacheLMove(
+    namespace: string,
+    source: string,
+    destination: string,
+    from: CacheListEnd,
+    to: CacheListEnd,
+    database = 'main',
+  ): Promise<Buffer | null> {
+    return cacheValue(
+      await this.request({ Cache: { LMove: { namespace, source, destination, from, to } } }, database),
+      'lmove',
+    );
+  }
+
+  /** Set the absolute instant (Unix epoch ms) a live key dies. A deadline already passed deletes it. */
+  async cacheExpireAt(namespace: string, key: string, atMs: number, database = 'main'): Promise<CacheExpireAtResult> {
+    const resp = await this.request({ Cache: { ExpireAt: { namespace, key, at_ms: atMs } } }, database);
+    const j = jsonData(resp, 'cache expireAt');
+    return { updated: !!j.updated, deleted: !!j.deleted };
+  }
+
+  /** Lookup hits and misses, the memory budget and the eviction policy of the node reached. */
+  async cacheStats(database = 'main'): Promise<CacheStats> {
+    return jsonData(await this.request({ Cache: 'Stats' }, database), 'cache stats');
+  }
+
+  /** Delete every cache key in `database`, across every namespace; resolves with how many. */
+  async cacheFlushDatabase(database = 'main'): Promise<number> {
+    return jsonData(await this.request({ Cache: 'FlushDatabase' }, database), 'cache flushDatabase').cleared;
+  }
+
+  /** Concatenate bytes onto a key (created when missing); resolves with the new length. */
+  async cacheAppend(namespace: string, key: string, value: CacheBytes, database = 'main'): Promise<number> {
+    const resp = await this.request({ Cache: { Append: { namespace, key, value: bytes(value, 'value') } } }, database);
+    return jsonData(resp, 'cache append').length;
+  }
+
+  /**
+   * Write only if the key still holds `expected` (null: must be absent).
+   * `value` null deletes the key. On a mismatch nothing is written.
+   */
+  async cacheCompareAndSwap(
+    namespace: string,
+    key: string,
+    expected: CacheBytes | null,
+    value: CacheBytes | null,
+    ttlMs: number | null = null,
+    database = 'main',
+  ): Promise<CacheSwapResult> {
+    const resp = await this.request(
+      {
+        Cache: {
+          CompareAndSwap: {
+            namespace,
+            key,
+            expected: expected === null ? null : bytes(expected, 'expected'),
+            value: value === null ? null : bytes(value, 'value'),
+            ttl_ms: ttlMs,
+          },
+        },
+      },
+      database,
+    );
+    const j = jsonData(resp, 'cache compareAndSwap');
+    return {
+      swapped: !!j.swapped,
+      current: typeof j.current === 'string' ? Buffer.from(j.current, 'utf8') : null,
+      currentIsBinary: !!j.currentIsBinary,
+    };
+  }
+
+  /** Read a key and delete it in one atomic step. */
+  async cacheGetDel(namespace: string, key: string, database = 'main'): Promise<Buffer | null> {
+    return cacheValue(await this.request({ Cache: { GetDel: { namespace, key } } }, database), 'getdel');
+  }
+
+  /** Write a value and resolve with the one it replaced. The old TTL is dropped. */
+  async cacheGetSet(namespace: string, key: string, value: CacheBytes, ttlMs: number | null = null, database = 'main'): Promise<Buffer | null> {
+    return cacheValue(
+      await this.request(
+        { Cache: { GetSet: { namespace, key, value: bytes(value, 'value'), ttl_ms: ttlMs } } },
+        database,
+      ),
+      'getset',
+    );
+  }
+
+  /** Read a key and change its expiry (see `CacheExpiry`) in the same atomic step. */
+  async cacheGetEx(namespace: string, key: string, expiry: CacheExpiryValue, database = 'main'): Promise<Buffer | null> {
+    return cacheValue(await this.request({ Cache: { GetEx: { namespace, key, expiry } } }, database), 'getex');
+  }
+
+  /** Keep only the inclusive index range of a list. */
+  async cacheLTrim(namespace: string, key: string, start: number, stop: number, database = 'main'): Promise<CacheTrimResult> {
+    const resp = await this.request({ Cache: { LTrim: { namespace, key, start, stop } } }, database);
+    const j = jsonData(resp, 'cache ltrim');
+    return { length: j.length, removed: j.removed };
+  }
+
+  /** Every member of every named set. A missing key is the empty set. */
+  async cacheSUnion(namespace: string, keys: ReadonlyArray<string>, database = 'main'): Promise<Buffer[]> {
+    const resp = await this.request({ Cache: { SUnion: { namespace, keys } } }, database);
+    return buffers(jsonData(resp, 'cache sunion').members);
+  }
+
+  /** The members present in every named set. */
+  async cacheSInter(namespace: string, keys: ReadonlyArray<string>, database = 'main'): Promise<Buffer[]> {
+    const resp = await this.request({ Cache: { SInter: { namespace, keys } } }, database);
+    return buffers(jsonData(resp, 'cache sinter').members);
+  }
+
+  /** The members of the first set that are in none of the rest. */
+  async cacheSDiff(namespace: string, keys: ReadonlyArray<string>, database = 'main'): Promise<Buffer[]> {
+    const resp = await this.request({ Cache: { SDiff: { namespace, keys } } }, database);
+    return buffers(jsonData(resp, 'cache sdiff').members);
+  }
+
+  /**
+   * Random members, without removing them. `count` null: at most one;
+   * positive: up to that many distinct; negative: exactly that many, repeats allowed.
+   */
+  async cacheSRandMember(namespace: string, key: string, count: number | null = null, database = 'main'): Promise<Buffer[]> {
+    const resp = await this.request({ Cache: { SRandMember: { namespace, key, count } } }, database);
+    return buffers(jsonData(resp, 'cache srandmember').members);
+  }
+
+  /** Add `by` to one hash field (ASCII decimal; a missing field starts at 0); resolves with the new value. */
+  async cacheHIncrBy(namespace: string, key: string, field: CacheBytes, by = 1, database = 'main'): Promise<number> {
+    const resp = await this.request(
+      { Cache: { HIncrBy: { namespace, key, field: bytes(field, 'field'), by } } },
+      database,
+    );
+    return jsonData(resp, 'cache hincrby').value;
+  }
+
+  /**
+   * Run cache operations in order in one round trip, each as if sent alone. A
+   * failing one does not stop the rest. Each operation is in the server's wire
+   * form, e.g. `{ Get: { namespace, key } }`, and so is each result.
+   */
+  async cachePipeline(ops: ReadonlyArray<CacheOpValue>, database = 'main'): Promise<CacheOpResult[]> {
+    const resp = await this.request({ Cache: { Pipeline: { ops } } }, database);
+    return jsonData(resp, 'cache pipeline').results || [];
+  }
+
+  /**
+   * `cachePipeline` with no other writer interleaving. Every operation is
+   * checked before any runs; after that there is no rollback.
+   */
+  async cacheTransaction(ops: ReadonlyArray<CacheOpValue>, database = 'main'): Promise<CacheOpResult[]> {
+    const resp = await this.request({ Cache: { Transaction: { ops } } }, database);
+    return jsonData(resp, 'cache transaction').results || [];
+  }
+
+  /** Store a script: operations run as one transaction, with `$1`, `$2`, ... replaced by its arguments. */
+  async cacheScriptLoad(name: string, ops: ReadonlyArray<CacheOpValue>, database = 'main'): Promise<CacheScriptLoaded> {
+    const resp = await this.request({ Cache: { ScriptLoad: { name, ops } } }, database);
+    const j = jsonData(resp, 'cache scriptLoad');
+    return { loaded: j.loaded, ops: j.ops };
+  }
+
+  /** Run a stored script with `args` as one transaction. */
+  async cacheScriptRun(name: string, args: ReadonlyArray<string> = [], database = 'main'): Promise<CacheScriptRun> {
+    const resp = await this.request({ Cache: { ScriptRun: { name, args } } }, database);
+    const j = jsonData(resp, 'cache scriptRun');
+    return { results: j.results || [], ops: j.ops || [] };
+  }
+
+  /**
+   * The most frequently addressed keys on the node. The server refuses this
+   * unless `[cache] hot_keys` is set, and the response is handed over as is.
+   */
+  async cacheHotKeys(opts: { limit?: number | null } = {}, database = 'main'): Promise<Json> {
+    const resp = await this.request({ Cache: { HotKeys: given({ limit: opts.limit }) } }, database);
+    return jsonData(resp, 'cache hotKeys');
+  }
+
+  /** Delete every expired cache key in `database` now; resolves with how many. */
+  async cachePurgeExpired(database = 'main'): Promise<number> {
+    return jsonData(await this.request({ Cache: 'PurgeExpired' }, database), 'cache purgeExpired').purged;
+  }
+
+  /**
+   * Pop the head of the first non-empty list among `keys`, waiting up to
+   * `timeoutMs`; null when the wait ran out. A `readTimeoutMs` shorter than
+   * the wait closes the connection first.
+   */
+  async cacheBLPop(namespace: string, keys: ReadonlyArray<string>, timeoutMs: number, database = 'main'): Promise<CacheListPop | null> {
+    return this._blockingPop('BLPop', namespace, keys, timeoutMs, database);
+  }
+
+  /** `cacheBLPop` from the tail. */
+  async cacheBRPop(namespace: string, keys: ReadonlyArray<string>, timeoutMs: number, database = 'main'): Promise<CacheListPop | null> {
+    return this._blockingPop('BRPop', namespace, keys, timeoutMs, database);
+  }
+
+  private async _blockingPop(
+    variant: string,
+    namespace: string,
+    keys: ReadonlyArray<string>,
+    timeoutMs: number,
+    database: string,
+  ): Promise<CacheListPop | null> {
+    const resp = await this.request({ Cache: { [variant]: { namespace, keys, timeout_ms: timeoutMs } } }, database);
+    const [key, value] = cacheValues(resp, variant.toLowerCase());
+    if (key === null || key === undefined || value === null || value === undefined) return null;
+    return { key: key.toString('utf8'), value };
+  }
+
+  /** Cap a namespace at `maxKeys` live keys and `maxBytes` of values. Neither given removes the limit. */
+  async cacheSetNamespaceLimit(
+    namespace: string,
+    opts: { maxKeys?: number | null; maxBytes?: number | null } = {},
+    database = 'main',
+  ): Promise<CacheNamespaceLimit> {
+    const resp = await this.request(
+      { Cache: { SetNamespaceLimit: { namespace, ...given({ max_keys: opts.maxKeys, max_bytes: opts.maxBytes }) } } },
+      database,
+    );
+    return jsonData(resp, 'cache setNamespaceLimit');
+  }
+
+  /** A namespace's limit and what it holds now. */
+  async cacheGetNamespaceLimit(namespace: string, database = 'main'): Promise<CacheNamespaceLimit> {
+    const resp = await this.request({ Cache: { GetNamespaceLimit: { namespace } } }, database);
+    return jsonData(resp, 'cache getNamespaceLimit');
+  }
+
+  /** Append a message to a channel; resolves with its id. */
+  async cachePublish(channel: string, message: string, database = 'main'): Promise<number> {
+    const resp = await this.request({ Cache: { Publish: { channel, message } } }, database);
+    return jsonData(resp, 'cache publish').id;
+  }
+
+  /**
+   * The messages after id `after` on `channels` (a trailing `*` is a pattern).
+   * Never blocks; pass the result's `next` as the following `after`.
+   */
+  async cachePoll(
+    channels: ReadonlyArray<string>,
+    opts: { after?: number; limit?: number } = {},
+    database = 'main',
+  ): Promise<CachePollResult> {
+    const resp = await this.request(
+      { Cache: { Poll: { channels, ...given({ after: opts.after, limit: opts.limit }) } } },
+      database,
+    );
+    const j = jsonData(resp, 'cache poll');
+    return { messages: j.messages || [], next: j.next };
+  }
+
   // -- document ---------------------------------------------------------------
 
   async documentCreateCollection(collection: string, database = 'main'): Promise<void> {
@@ -785,6 +1474,164 @@ export class TriCore {
     return documentsData<JsonObject>(resp, 'document aggregate');
   }
 
+  // -- document: server 0.1.0-rc.3 and later ------------------------------------
+
+  /**
+   * Swap a document's whole body: anything not in `document` is gone.
+   * `return` hands back the document as it was `'Before'` or is `'After'`;
+   * `expectedVersion` applies only on a versioned collection.
+   */
+  async documentReplace(
+    collection: string,
+    id: string,
+    document: JsonObject,
+    opts: { upsert?: boolean; return?: DocumentReturn; expectedVersion?: number | null } = {},
+    database = 'main',
+  ): Promise<DocumentReplaceResult> {
+    const body: Record<string, unknown> = { collection, id, document, upsert: !!opts.upsert };
+    if (opts.return !== undefined && opts.return !== 'None') body.return = opts.return;
+    if (opts.expectedVersion !== undefined && opts.expectedVersion !== null) body.expected_version = opts.expectedVersion;
+    const resp = await this.request({ Document: { Replace: body } }, database);
+    const j = jsonData(resp, 'document replace');
+    const out: DocumentReplaceResult = { replaced: !!j.replaced, inserted: !!j.inserted, id: j.id };
+    if (j.document !== undefined) out.document = j.document;
+    return out;
+  }
+
+  /**
+   * Insert several documents as one atomic batch; resolves with their ids in
+   * order. Each id is the document's own `_id`, or generated.
+   */
+  async documentInsertMany(collection: string, documents: ReadonlyArray<JsonObject>, database = 'main'): Promise<string[]> {
+    const resp = await this.request({ Document: { InsertMany: { collection, documents } } }, database);
+    return jsonData(resp, 'document insertMany').ids || [];
+  }
+
+  /** Delete every document matching `filter`; resolves with how many. */
+  async documentDeleteMany(collection: string, filter: DocumentFilterValue, database = 'main'): Promise<number> {
+    const resp = await this.request({ Document: { DeleteMany: { collection, filter } } }, database);
+    return jsonData(resp, 'document deleteMany').deleted;
+  }
+
+  /** Move a collection, its documents and its indexes to a new name. Refused when `to` exists. */
+  async documentRenameCollection(collection: string, to: string, database = 'main'): Promise<DocumentRenameResult> {
+    const resp = await this.request({ Document: { RenameCollection: { collection, to } } }, database);
+    return jsonData(resp, 'document renameCollection');
+  }
+
+  /** Delete the documents a TTL index says have expired, now. */
+  async documentPurgeExpired(collection: string, database = 'main'): Promise<DocumentPurgeResult> {
+    const resp = await this.request({ Document: { PurgeExpired: { collection } } }, database);
+    const j = jsonData(resp, 'document purgeExpired');
+    return { purged: j.purged, more: !!j.more };
+  }
+
+  /** Run a find and describe how it ran instead of returning its documents. */
+  async documentExplain(
+    collection: string,
+    filter: DocumentFilterValue = DocFilter.all(),
+    opts: { limit?: number | null; sort?: ReadonlyArray<DocumentSortKey>; skip?: number | null } = {},
+    database = 'main',
+  ): Promise<DocumentExplain> {
+    const resp = await this.request(
+      {
+        Document: {
+          Explain: { collection, filter, ...given({ limit: opts.limit, sort: opts.sort, skip: opts.skip }) },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'document explain');
+  }
+
+  /**
+   * Open a document transaction and make it this connection's `txn`: every
+   * later request reads and writes inside it until it is committed or rolled
+   * back. Snapshot isolation, or with `serializable` its reads are validated
+   * at commit. Resolves with the transaction id.
+   */
+  async documentBeginTransaction(opts: { serializable?: boolean } = {}, database = 'main'): Promise<string> {
+    this._refuseSecondTxn();
+    const resp = await this.request({ Document: { BeginTransaction: { serializable: !!opts.serializable } } }, database);
+    const txn: string = jsonData(resp, 'document beginTransaction').txn;
+    this.txn = txn;
+    return txn;
+  }
+
+  /**
+   * Commit this connection's `txn`: every write lands as one batch, or a
+   * conflict is thrown and nothing lands. After a refusal the transaction is
+   * still open on the server; roll it back.
+   */
+  async documentCommitTransaction(database = 'main'): Promise<DocumentCommitResult> {
+    const resp = await this.request({ Document: 'CommitTransaction' }, database);
+    this.txn = null;
+    const j = jsonData(resp, 'document commitTransaction');
+    return { committed: !!j.committed, writes: j.writes };
+  }
+
+  /** Discard this connection's `txn`. */
+  async documentRollbackTransaction(database = 'main'): Promise<void> {
+    await this._endTxn({ Document: 'RollbackTransaction' }, database);
+  }
+
+  /** Rebuild one index from the stored documents. */
+  async documentRebuildIndex(collection: string, indexName: string, database = 'main'): Promise<DocumentRebuildResult> {
+    const resp = await this.request({ Document: { RebuildIndex: { collection, index_name: indexName } } }, database);
+    return jsonData(resp, 'document rebuildIndex');
+  }
+
+  /**
+   * Set a collection's schema, defaults and versioning, replacing any it had.
+   * Refused when an existing document would break the new schema.
+   */
+  async documentSetCollectionOptions(
+    collection: string,
+    options: DocumentCollectionOptions,
+    database = 'main',
+  ): Promise<DocumentOptionsUpdate> {
+    const resp = await this.request({ Document: { SetCollectionOptions: { collection, options } } }, database);
+    return jsonData(resp, 'document setCollectionOptions');
+  }
+
+  async documentGetCollectionOptions(collection: string, database = 'main'): Promise<DocumentCollectionOptions> {
+    const resp = await this.request({ Document: { GetCollectionOptions: { collection } } }, database);
+    return jsonData(resp, 'document getCollectionOptions').options || {};
+  }
+
+  /**
+   * Many inserts, updates, replaces and deletes on one collection, built with
+   * `DocBulk` and applied in order as one atomic batch.
+   */
+  async documentBulkWrite(collection: string, ops: ReadonlyArray<BulkOpValue>, database = 'main'): Promise<DocumentBulkResult> {
+    const resp = await this.request({ Document: { BulkWrite: { collection, ops } } }, database);
+    return jsonData(resp, 'document bulkWrite');
+  }
+
+  /** `txn` holds one transaction at a time; a second begin would lose track of the first. */
+  private _refuseSecondTxn(): void {
+    if (this.txn === null || this.txn === undefined) return;
+    const err = new TriCoreError(
+      `transaction \`${this.txn}\` is already open on this connection; commit it or roll it back ` +
+        'first, or set `txn = null` to leave it open and begin another',
+    );
+    err.notSent = true;
+    throw err;
+  }
+
+  /** Send a rollback. Whatever the server answers, the transaction is over for this connection. */
+  private async _endTxn(op: Record<string, unknown>, database: string): Promise<Response> {
+    let resp: Response;
+    try {
+      resp = await this.request(op, database);
+    } catch (e) {
+      if (!(e && (e as TriCoreError).notSent)) this.txn = null;
+      throw e;
+    }
+    this.txn = null;
+    return resp;
+  }
+
   // -- vector -----------------------------------------------------------------
 
   async vectorCreateCollection(
@@ -822,17 +1669,21 @@ export class TriCore {
     await this.request({ Vector: { Delete: { collection, id } } }, database);
   }
 
-  /** Nearest neighbours, best first. `opts.filter` is a flat equality map on metadata. */
+  /**
+   * Nearest neighbours, best first. `opts.filter` is a flat equality map on
+   * metadata. The other options (`using` for a named vector, `offset`,
+   * `exact`, ...) need server 0.1.0-rc.3 or later.
+   */
   async vectorSearch(
     collection: string,
     vector: ArrayLike<number>,
     topK: number,
-    opts: { filter?: Record<string, Json> | null } = {},
+    opts: VectorSearchOptions & { filter?: Record<string, Json> | null } = {},
     database = 'main',
   ): Promise<VectorHits> {
     const { filter = null } = opts;
     const resp = await this.request(
-      { Vector: { Search: { collection, vector: numbers(vector), top_k: topK, filter } } },
+      { Vector: { Search: { collection, vector: numbers(vector), top_k: topK, filter, ...searchOptions(opts) } } },
       database,
     );
     const j = jsonData(resp, 'vector search');
@@ -864,6 +1715,269 @@ export class TriCore {
 
   async vectorDropCollection(collection: string, database = 'main'): Promise<void> {
     await this.request({ Vector: { DropCollection: { collection } } }, database);
+  }
+
+  // -- vector: server 0.1.0-rc.3 and later --------------------------------------
+
+  /** Embed texts with the server's built-in embedder (feature hashing: lexical, no model). Nothing is stored. */
+  async vectorEmbed(texts: ReadonlyArray<string>, dimension: number, database = 'main'): Promise<VectorEmbedding> {
+    const resp = await this.request({ Vector: { Embed: { texts, dimension } } }, database);
+    return jsonData(resp, 'vector embed');
+  }
+
+  /**
+   * Embed each text at the collection's dimension and upsert the vectors as
+   * one atomic batch; resolves with how many. The text is kept in the metadata
+   * under `text`.
+   */
+  async vectorUpsertText(collection: string, items: ReadonlyArray<VectorTextItem>, database = 'main'): Promise<number> {
+    const wire = items.map((i) => ({ id: i.id, text: i.text, metadata: i.metadata === undefined ? null : i.metadata }));
+    const resp = await this.request({ Vector: { UpsertText: { collection, items: wire } } }, database);
+    return jsonData(resp, 'vector upsertText').upserted;
+  }
+
+  /** Point an alias at a collection; `collection` null removes it. */
+  async vectorSetAlias(alias: string, collection: string | null, database = 'main'): Promise<void> {
+    await this.request({ Vector: { SetAlias: { alias, collection } } }, database);
+  }
+
+  async vectorListAliases(database = 'main'): Promise<VectorAlias[]> {
+    const resp = await this.request({ Vector: 'ListAliases' }, database);
+    return jsonData(resp, 'vector listAliases').aliases || [];
+  }
+
+  /** Declare a second vector per item, with its own dimension and metric, searched with `using`. */
+  async vectorAddNamedVector(
+    collection: string,
+    name: string,
+    dimension: number,
+    metric: VectorMetric = 'cosine',
+    database = 'main',
+  ): Promise<void> {
+    await this.request({ Vector: { AddNamedVector: { collection, name, dimension, metric } } }, database);
+  }
+
+  /** Write an item's vectors by name (`default` is the collection's own); resolves with its id. */
+  async vectorUpsertNamed(
+    collection: string,
+    id: string,
+    vectors: Record<string, ArrayLike<number>>,
+    metadata: Json = null,
+    database = 'main',
+  ): Promise<string> {
+    const wire: Record<string, number[]> = {};
+    for (const [name, v] of Object.entries(vectors)) wire[name] = numbers(v);
+    const resp = await this.request({ Vector: { UpsertNamed: { collection, id, vectors: wire, metadata } } }, database);
+    return jsonData(resp, 'vector upsertNamed').id;
+  }
+
+  /** Write many vectors as one atomic batch; resolves with how many. A repeated id is refused. */
+  async vectorUpsertMany(collection: string, items: ReadonlyArray<VectorUpsertItem>, database = 'main'): Promise<number> {
+    const wire = items.map((i) => ({
+      id: i.id,
+      vector: numbers(i.vector),
+      metadata: i.metadata === undefined ? null : i.metadata,
+    }));
+    const resp = await this.request({ Vector: { UpsertMany: { collection, items: wire } } }, database);
+    return jsonData(resp, 'vector upsertMany').upserted;
+  }
+
+  /** Delete many vectors by id as one atomic batch; resolves with how many were present. */
+  async vectorDeleteMany(collection: string, ids: ReadonlyArray<string>, database = 'main'): Promise<number> {
+    const resp = await this.request({ Vector: { DeleteMany: { collection, ids } } }, database);
+    return jsonData(resp, 'vector deleteMany').deleted;
+  }
+
+  /** Several query vectors in one request: one hit list per query, in the order asked. */
+  async vectorSearchBatch(
+    collection: string,
+    vectors: ReadonlyArray<ArrayLike<number>>,
+    topK: number,
+    opts: VectorSearchOptions & { filter?: Record<string, Json> | null; minScore?: number | null; includeVectors?: boolean } = {},
+    database = 'main',
+  ): Promise<VectorSearchHit[][]> {
+    const resp = await this.request(
+      {
+        Vector: {
+          SearchBatch: {
+            collection,
+            vectors: vectorList(vectors, 'vectors'),
+            top_k: topK,
+            ...given({ filter: opts.filter, min_score: opts.minScore, include_vectors: opts.includeVectors }),
+            ...searchOptions(opts),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'vector searchBatch').results || [];
+  }
+
+  /** Delete every vector whose metadata matches `filter`; an empty filter is refused. */
+  async vectorDeleteByFilter(collection: string, filter: Record<string, Json>, database = 'main'): Promise<number> {
+    const resp = await this.request({ Vector: { DeleteByFilter: { collection, filter } } }, database);
+    return jsonData(resp, 'vector deleteByFilter').deleted;
+  }
+
+  /** Merge `set` into the metadata of every vector matching `filter`; resolves with how many. */
+  async vectorUpdateByFilter(
+    collection: string,
+    filter: Record<string, Json>,
+    set: Record<string, Json>,
+    database = 'main',
+  ): Promise<number> {
+    const resp = await this.request({ Vector: { UpdateByFilter: { collection, filter, set } } }, database);
+    return jsonData(resp, 'vector updateByFilter').updated;
+  }
+
+  /** How many vectors a collection holds or, with a `filter`, how many match it. An exact count. */
+  async vectorCount(collection: string, opts: { filter?: Record<string, Json> | null } = {}, database = 'main'): Promise<number> {
+    const resp = await this.request({ Vector: { Count: { collection, ...given({ filter: opts.filter }) } } }, database);
+    return jsonData(resp, 'vector count').count;
+  }
+
+  /** Each distinct value of `field` (`_namespace`, the default, or `_tenant`) with its vector count. */
+  async vectorListPartitions(collection: string, opts: { field?: string } = {}, database = 'main'): Promise<VectorPartitions> {
+    const resp = await this.request({ Vector: { ListPartitions: { collection, ...given({ field: opts.field }) } } }, database);
+    return jsonData(resp, 'vector listPartitions');
+  }
+
+  /** Rename a collection with every vector in it. Refused when `to` exists. */
+  async vectorRenameCollection(collection: string, to: string, database = 'main'): Promise<VectorRenameResult> {
+    const resp = await this.request({ Vector: { RenameCollection: { collection, to } } }, database);
+    return jsonData(resp, 'vector renameCollection');
+  }
+
+  /** Rebuild the collection's ANN index from its stored vectors and persist it. */
+  async vectorRebuildIndex(collection: string, database = 'main'): Promise<VectorRebuildResult> {
+    const resp = await this.request({ Vector: { RebuildIndex: { collection } } }, database);
+    return jsonData(resp, 'vector rebuildIndex');
+  }
+
+  /** The shape of the collection's ANN index. */
+  async vectorIndexStats(collection: string, database = 'main'): Promise<VectorIndexStats> {
+    const resp = await this.request({ Vector: { IndexStats: { collection } } }, database);
+    return jsonData(resp, 'vector indexStats');
+  }
+
+  /** Measure the ANN index's recall against exact scans of `sample` stored vectors. */
+  async vectorMeasureRecall(
+    collection: string,
+    opts: { sample?: number | null; topK?: number | null; efSearch?: number | null } = {},
+    database = 'main',
+  ): Promise<VectorRecall> {
+    const resp = await this.request(
+      {
+        Vector: {
+          MeasureRecall: { collection, ...given({ sample: opts.sample, top_k: opts.topK, ef_search: opts.efSearch }) },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'vector measureRecall');
+  }
+
+  /** Search with several query vectors and return one fused ranking (`rrf` by default). */
+  async vectorSearchMulti(
+    collection: string,
+    vectors: ReadonlyArray<ArrayLike<number>>,
+    topK: number,
+    opts: { fusion?: 'rrf' | 'max' | 'mean'; filter?: Record<string, Json> | null } = {},
+    database = 'main',
+  ): Promise<VectorMultiHits> {
+    const resp = await this.request(
+      {
+        Vector: {
+          SearchMulti: {
+            collection,
+            vectors: vectorList(vectors, 'vectors'),
+            top_k: topK,
+            ...given({ fusion: opts.fusion, filter: opts.filter }),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'vector searchMulti');
+  }
+
+  /**
+   * Change a collection's configuration. `normalize` can only change on an
+   * empty collection; `m` and `efConstruction` force an index rebuild.
+   */
+  async vectorSetCollectionConfig(
+    collection: string,
+    opts: { normalize?: boolean | null; m?: number | null; efConstruction?: number | null; multiTenant?: boolean | null },
+    database = 'main',
+  ): Promise<VectorCollectionConfig> {
+    const resp = await this.request(
+      {
+        Vector: {
+          SetCollectionConfig: {
+            collection,
+            ...given({
+              normalize: opts.normalize,
+              m: opts.m,
+              ef_construction: opts.efConstruction,
+              multi_tenant: opts.multiTenant,
+            }),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'vector setCollectionConfig');
+  }
+
+  /** Copy a collection, configuration and vectors, to a new name; resolves with how many vectors. */
+  async vectorCopyCollection(collection: string, to: string, database = 'main'): Promise<number> {
+    const resp = await this.request({ Vector: { CopyCollection: { collection, to } } }, database);
+    return jsonData(resp, 'vector copyCollection').copied;
+  }
+
+  /**
+   * Search with a query built from examples: the sum of the `positive` ones
+   * minus the sum of `opts.negative`. An example is a stored vector's id or a
+   * vector. Examples named by id are left out unless `excludeExamples` is false.
+   */
+  async vectorSearchByExamples(
+    collection: string,
+    positive: ReadonlyArray<VectorExample>,
+    topK: number,
+    opts: VectorSearchOptions & {
+      negative?: ReadonlyArray<VectorExample>;
+      filter?: Record<string, Json> | null;
+      minScore?: number | null;
+      includeVectors?: boolean;
+      excludeExamples?: boolean;
+    } = {},
+    database = 'main',
+  ): Promise<VectorExampleHits> {
+    const example = (e: VectorExample): string | number[] => (typeof e === 'string' ? e : numbers(e));
+    const resp = await this.request(
+      {
+        Vector: {
+          SearchByExamples: {
+            collection,
+            positive: positive.map(example),
+            negative: (opts.negative || []).map(example),
+            top_k: topK,
+            ...given({
+              filter: opts.filter,
+              min_score: opts.minScore,
+              include_vectors: opts.includeVectors,
+              exclude_examples: opts.excludeExamples,
+            }),
+            ...searchOptions(opts),
+          },
+        },
+      },
+      database,
+    );
+    const j = jsonData(resp, 'vector searchByExamples');
+    const results = j.results || [];
+    Object.defineProperty(results, 'index', { value: j.index, enumerable: false });
+    return results as VectorExampleHits;
   }
 
   // -- graph ------------------------------------------------------------------
@@ -1022,6 +2136,454 @@ export class TriCore {
   async graphQuery(graph: string, cypher: string, database = 'main'): Promise<GraphQueryResult> {
     const resp = await this.request({ Graph: { Query: { graph, cypher } } }, database);
     return jsonData(resp, 'graph query');
+  }
+
+  // -- graph: server 0.1.0-rc.3 and later ---------------------------------------
+
+  /**
+   * Write many nodes and edges as one unit: every record lands or none does.
+   * Nodes are written first, so an edge may join nodes of the same batch.
+   */
+  async graphAddMany(
+    graph: string,
+    batch: { nodes?: ReadonlyArray<GraphNodeInput>; edges?: ReadonlyArray<GraphEdgeInput> },
+    database = 'main',
+  ): Promise<GraphBatchResult> {
+    const resp = await this.request(
+      { Graph: { AddMany: { graph, nodes: batch.nodes || [], edges: batch.edges || [] } } },
+      database,
+    );
+    return jsonData(resp, 'graph addMany');
+  }
+
+  /**
+   * Delete many nodes and edges as one unit. An id that is not there is
+   * skipped. With `detach`, every edge touching a removed node goes too.
+   */
+  async graphRemoveMany(
+    graph: string,
+    batch: { nodes?: ReadonlyArray<string>; edges?: ReadonlyArray<string>; detach?: boolean },
+    database = 'main',
+  ): Promise<GraphRemoveResult> {
+    const resp = await this.request(
+      {
+        Graph: {
+          RemoveMany: { graph, nodes: batch.nodes || [], edges: batch.edges || [], detach: !!batch.detach },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph removeMany');
+  }
+
+  /**
+   * Change an existing node in place. `properties` is a JSON merge patch: a
+   * key set to null is removed, a key left out is kept. Resolves with the node.
+   */
+  async graphUpdateNode(
+    graph: string,
+    id: string,
+    opts: { properties?: Json; addLabels?: ReadonlyArray<string>; removeLabels?: ReadonlyArray<string> } = {},
+    database = 'main',
+  ): Promise<GraphNode> {
+    const resp = await this.request(
+      {
+        Graph: {
+          UpdateNode: {
+            graph,
+            id,
+            ...given({ properties: opts.properties, add_labels: opts.addLabels, remove_labels: opts.removeLabels }),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph updateNode');
+  }
+
+  /** Change an existing edge in place: `properties` merges, `label` changes its type. The endpoints cannot change. */
+  async graphUpdateEdge(
+    graph: string,
+    id: string,
+    opts: { properties?: Json; label?: string | null } = {},
+    database = 'main',
+  ): Promise<GraphEdge> {
+    const resp = await this.request(
+      { Graph: { UpdateEdge: { graph, id, ...given({ properties: opts.properties, label: opts.label }) } } },
+      database,
+    );
+    return jsonData(resp, 'graph updateEdge');
+  }
+
+  /** Copy a graph, with its nodes, edges and schema, to a new name. Refused when `to` exists. */
+  async graphCopy(graph: string, to: string, database = 'main'): Promise<GraphCopyResult> {
+    const resp = await this.request({ Graph: { CopyGraph: { graph, to } } }, database);
+    return jsonData(resp, 'graph copy');
+  }
+
+  /** Bounded depth-first walk: the same nodes as `graphTraverse`, in DFS preorder. */
+  async graphDfs(
+    graph: string,
+    start: string,
+    opts: { direction?: GraphDirection; label?: string | null; maxDepth?: number | null; limit?: number | null } = {},
+    database = 'main',
+  ): Promise<GraphDfsResult> {
+    const resp = await this.request(
+      {
+        Graph: {
+          Dfs: {
+            graph,
+            start,
+            ...given({ direction: opts.direction, label: opts.label, max_depth: opts.maxDepth, limit: opts.limit }),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph dfs');
+  }
+
+  /** Partition the nodes into connected components, largest first. `weak` (default) ignores edge direction. */
+  async graphConnectedComponents(
+    graph: string,
+    opts: { kind?: 'weak' | 'strong'; label?: string | null; limit?: number | null } = {},
+    database = 'main',
+  ): Promise<GraphComponents> {
+    const resp = await this.request(
+      {
+        Graph: {
+          ConnectedComponents: { graph, ...given({ kind: opts.kind, label: opts.label, limit: opts.limit }) },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph connectedComponents');
+  }
+
+  /** Whether the graph contains a cycle, and one cycle as evidence. `directed` defaults to true. */
+  async graphDetectCycle(
+    graph: string,
+    opts: { directed?: boolean; label?: string | null } = {},
+    database = 'main',
+  ): Promise<GraphCycle> {
+    const resp = await this.request(
+      { Graph: { DetectCycle: { graph, ...given({ directed: opts.directed, label: opts.label }) } } },
+      database,
+    );
+    return jsonData(resp, 'graph detectCycle');
+  }
+
+  /** Counts describing a graph: nodes and edges, per label and type, degree extremes, dangling edges. */
+  async graphStats(graph: string, database = 'main'): Promise<GraphStats> {
+    return jsonData(await this.request({ Graph: { GraphStats: { graph } } }, database), 'graph stats');
+  }
+
+  /** The nodes within `maxDepth` hops of `seeds` and every edge joining two of them. */
+  async graphSubgraph(
+    graph: string,
+    seeds: ReadonlyArray<string>,
+    opts: { direction?: GraphDirection; label?: string | null; maxDepth?: number | null; limit?: number | null } = {},
+    database = 'main',
+  ): Promise<GraphSubgraph> {
+    const resp = await this.request(
+      {
+        Graph: {
+          Subgraph: {
+            graph,
+            seeds,
+            ...given({ direction: opts.direction, label: opts.label, max_depth: opts.maxDepth, limit: opts.limit }),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph subgraph');
+  }
+
+  /** The node labels and edge types in the data, each with a count and the property keys seen on it. */
+  async graphSchema(graph: string, database = 'main'): Promise<GraphSchemaInfo> {
+    return jsonData(await this.request({ Graph: { GraphSchema: { graph } } }, database), 'graph schema');
+  }
+
+  /** The `k` cheapest loopless paths, cheapest first. Without `weightProperty` every edge costs 1. */
+  async graphKShortestPaths(
+    graph: string,
+    from: string,
+    to: string,
+    opts: { k?: number | null; direction?: GraphDirection; label?: string | null; weightProperty?: string | null } = {},
+    database = 'main',
+  ): Promise<GraphPaths> {
+    const resp = await this.request(
+      {
+        Graph: {
+          KShortestPaths: {
+            graph,
+            from,
+            to,
+            ...given({ k: opts.k, direction: opts.direction, label: opts.label, weight_property: opts.weightProperty }),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph kShortestPaths');
+  }
+
+  /** Every simple path of at most `maxDepth` edges, up to `limit` paths. `complete` says whether it finished. */
+  async graphAllPaths(
+    graph: string,
+    from: string,
+    to: string,
+    opts: { direction?: GraphDirection; label?: string | null; maxDepth?: number | null; limit?: number | null } = {},
+    database = 'main',
+  ): Promise<GraphAllPaths> {
+    const resp = await this.request(
+      {
+        Graph: {
+          AllPaths: {
+            graph,
+            from,
+            to,
+            ...given({ direction: opts.direction, label: opts.label, max_depth: opts.maxDepth, limit: opts.limit }),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph allPaths');
+  }
+
+  /** Betweenness, closeness or eigenvector centrality, top `limit` nodes. `iterations` and `tolerance` tune eigenvector only. */
+  async graphCentrality(
+    graph: string,
+    measure: GraphCentralityMeasure,
+    opts: {
+      directed?: boolean;
+      label?: string | null;
+      limit?: number | null;
+      iterations?: number | null;
+      tolerance?: number | null;
+    } = {},
+    database = 'main',
+  ): Promise<GraphCentrality> {
+    const resp = await this.request(
+      {
+        Graph: {
+          Centrality: {
+            graph,
+            measure,
+            ...given({
+              directed: opts.directed,
+              label: opts.label,
+              limit: opts.limit,
+              iterations: opts.iterations,
+              tolerance: opts.tolerance,
+            }),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph centrality');
+  }
+
+  /** Communities by Louvain modularity optimisation, direction ignored, largest first. */
+  async graphCommunities(
+    graph: string,
+    opts: { label?: string | null; iterations?: number | null; limit?: number | null } = {},
+    database = 'main',
+  ): Promise<GraphCommunities> {
+    const resp = await this.request(
+      {
+        Graph: {
+          Communities: { graph, ...given({ label: opts.label, iterations: opts.iterations, limit: opts.limit }) },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph communities');
+  }
+
+  /** Triangles and clustering coefficients, direction ignored. */
+  async graphTriangleCount(
+    graph: string,
+    opts: { label?: string | null; limit?: number | null } = {},
+    database = 'main',
+  ): Promise<GraphTriangles> {
+    const resp = await this.request(
+      { Graph: { TriangleCount: { graph, ...given({ label: opts.label, limit: opts.limit }) } } },
+      database,
+    );
+    return jsonData(resp, 'graph triangleCount');
+  }
+
+  /** The nodes whose neighbour sets most resemble `node`'s (`jaccard` by default). */
+  async graphNodeSimilarity(
+    graph: string,
+    node: string,
+    opts: { direction?: GraphDirection; label?: string | null; metric?: 'jaccard' | 'overlap'; limit?: number | null } = {},
+    database = 'main',
+  ): Promise<GraphSimilarity> {
+    const resp = await this.request(
+      {
+        Graph: {
+          NodeSimilarity: {
+            graph,
+            node,
+            ...given({ direction: opts.direction, label: opts.label, metric: opts.metric, limit: opts.limit }),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph nodeSimilarity');
+  }
+
+  /** Check a graph's stored records against each other and against the in-memory mirror. */
+  async graphCheckConsistency(graph: string, database = 'main'): Promise<GraphConsistency> {
+    return jsonData(await this.request({ Graph: { CheckConsistency: { graph } } }, database), 'graph checkConsistency');
+  }
+
+  /** Index node properties for `graphFindNodes`. Several properties make a composite index; `label` limits it. */
+  async graphCreateNodeIndex(
+    graph: string,
+    name: string,
+    properties: ReadonlyArray<string>,
+    opts: { label?: string | null } = {},
+    database = 'main',
+  ): Promise<void> {
+    await this.request(
+      { Graph: { CreateNodeIndex: { graph, name, ...given({ label: opts.label }), properties } } },
+      database,
+    );
+  }
+
+  /**
+   * Enforce `unique` or `required` on a property of every node (or, with
+   * `target: 'edge'`, every relationship) labelled `label`. Refused when a
+   * stored record already breaks it.
+   */
+  async graphCreateConstraint(
+    graph: string,
+    name: string,
+    label: string,
+    property: string,
+    kind: GraphConstraintKind,
+    opts: { target?: GraphConstraintTarget } = {},
+    database = 'main',
+  ): Promise<void> {
+    await this.request(
+      { Graph: { CreateConstraint: { graph, name, label, property, kind, ...given({ target: opts.target }) } } },
+      database,
+    );
+  }
+
+  /** Drop an index or a constraint by name. */
+  async graphDropSchemaObject(graph: string, name: string, database = 'main'): Promise<void> {
+    await this.request({ Graph: { DropSchemaObject: { graph, name } } }, database);
+  }
+
+  /** A graph's indexes and constraints. */
+  async graphListSchemaObjects(graph: string, database = 'main'): Promise<GraphSchemaObjects> {
+    const j = jsonData(await this.request({ Graph: { ListSchemaObjects: { graph } } }, database), 'graph listSchemaObjects');
+    return { indexes: j.indexes || [], constraints: j.constraints || [] };
+  }
+
+  /** Nodes with `label` whose `properties` equal the given values, in id order. `plan` says how it was answered. */
+  async graphFindNodes(
+    graph: string,
+    opts: { label?: string | null; properties?: Record<string, Json>; limit?: number | null } = {},
+    database = 'main',
+  ): Promise<GraphFoundNodes> {
+    const resp = await this.request(
+      {
+        Graph: {
+          FindNodes: { graph, ...given({ label: opts.label, properties: opts.properties, limit: opts.limit }) },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph findNodes');
+  }
+
+  /** Import nodes and edges from CSV text as one atomic batch. Constraints apply. */
+  async graphImportCsv(
+    graph: string,
+    csv: { nodes?: string | null; edges?: string | null },
+    database = 'main',
+  ): Promise<GraphBatchResult> {
+    const resp = await this.request(
+      { Graph: { ImportCsv: { graph, ...given({ nodes: csv.nodes, edges: csv.edges }) } } },
+      database,
+    );
+    return jsonData(resp, 'graph importCsv');
+  }
+
+  /** PageRank over edge direction: the top `limit` nodes by rank. `damping` defaults to 0.85. */
+  async graphPageRank(
+    graph: string,
+    opts: {
+      damping?: number | null;
+      iterations?: number | null;
+      tolerance?: number | null;
+      label?: string | null;
+      limit?: number | null;
+    } = {},
+    database = 'main',
+  ): Promise<GraphPageRank> {
+    const resp = await this.request(
+      {
+        Graph: {
+          PageRank: {
+            graph,
+            ...given({
+              damping: opts.damping,
+              iterations: opts.iterations,
+              tolerance: opts.tolerance,
+              label: opts.label,
+              limit: opts.limit,
+            }),
+          },
+        },
+      },
+      database,
+    );
+    return jsonData(resp, 'graph pageRank');
+  }
+
+  /**
+   * A Cypher write: `CREATE`, `MERGE`, `SET`, `REMOVE`, `[DETACH] DELETE`,
+   * optionally after `MATCH ... [WHERE ...]`. Inside a graph transaction it is
+   * queued rather than applied.
+   */
+  async graphExecute(graph: string, cypher: string, database = 'main'): Promise<GraphWriteResult> {
+    return jsonData(await this.request({ Graph: { Execute: { graph, cypher } } }, database), 'graph execute');
+  }
+
+  /**
+   * Open a transaction on `graph` and make it this connection's `txn`: each
+   * later `graphExecute` is queued until the commit. Other graph writes are
+   * not queued. Resolves with the transaction id.
+   */
+  async graphBeginTransaction(graph: string, database = 'main'): Promise<string> {
+    this._refuseSecondTxn();
+    const resp = await this.request({ Graph: { BeginTransaction: { graph } } }, database);
+    const txn: string = jsonData(resp, 'graph beginTransaction').transaction;
+    this.txn = txn;
+    return txn;
+  }
+
+  /** Apply every queued statement of this connection's `txn`: all of them or none. */
+  async graphCommitTransaction(graph: string, database = 'main'): Promise<GraphCommitResult> {
+    const resp = await this.request({ Graph: { CommitTransaction: { graph } } }, database);
+    this.txn = null;
+    return jsonData(resp, 'graph commitTransaction');
+  }
+
+  /** Discard this connection's `txn`; resolves with how many queued statements were dropped. */
+  async graphRollbackTransaction(graph: string, database = 'main'): Promise<number> {
+    const resp = await this._endTxn({ Graph: { RollbackTransaction: { graph } } }, database);
+    return jsonData(resp, 'graph rollbackTransaction').rolled_back;
   }
 
   // -- llm --------------------------------------------------------------------

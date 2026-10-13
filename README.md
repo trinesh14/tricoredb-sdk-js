@@ -280,6 +280,41 @@ Also: `documentUpdate`, `documentDelete`, `documentListCollections`,
 `documentDropCollection`, `documentDropIndex`, `documentListIndexes`,
 `documentAnalyze`.
 
+### Batches, options and transactions
+
+These need server 0.1.0-rc.3 or later; an older server answers them with an error.
+
+```js
+import { DocBulk } from 'tricoredb';
+
+const ids = await db.documentInsertMany('people', [{ name: 'Lin' }, { _id: 'kay', name: 'Kay' }]);
+await db.documentReplace('people', 'kay', { name: 'Kay', city: 'Oslo' }, { return: 'After' });
+
+// One atomic batch: every item lands or none does.
+await db.documentBulkWrite('people', [
+  DocBulk.insert({ name: 'Tim' }, { id: 'tim' }),
+  DocBulk.updateOne('kay', { inc: { visits: 1 } }),
+  DocBulk.delete(ids[0]),
+]);
+
+// A transaction spans requests on this connection until it commits or rolls back.
+await db.documentBeginTransaction();          // sets db.txn
+try {
+  await db.documentUpdate('people', 'kay', { city: 'Bergen' });
+  await db.documentCommitTransaction();
+} catch (err) {
+  await db.documentRollbackTransaction();     // a refused commit leaves it open
+  throw err;
+}
+```
+
+| Group | Methods |
+| --- | --- |
+| Writes | `documentReplace`, `documentInsertMany`, `documentDeleteMany`, `documentBulkWrite` (items from `DocBulk`: `insert`, `updateOne`, `replace`, `delete`) |
+| Transactions | `documentBeginTransaction`, `documentCommitTransaction`, `documentRollbackTransaction` |
+| Collections | `documentRenameCollection`, `documentSetCollectionOptions`, `documentGetCollectionOptions` (schema, defaults, versioning), `documentPurgeExpired` |
+| Indexes and plans | `documentRebuildIndex`, `documentExplain` |
+
 ## Vectors
 
 ```js
@@ -292,6 +327,32 @@ const hits = await db.vectorSearch('embeddings', [0.1, 0.2, 0.25], 5);
 
 Also: `vectorGet`, `vectorDelete`, `vectorListCollections`,
 `vectorDescribeCollection`, `vectorListVectors`, `vectorDropCollection`.
+
+### Batches, named vectors and more searches
+
+These need server 0.1.0-rc.3 or later; an older server answers them with an error.
+
+```js
+await db.vectorUpsertMany('embeddings', [
+  { id: 'doc-2', vector: [0.3, 0.1, 0.9], metadata: { lang: 'en' } },
+  { id: 'doc-3', vector: [0.2, 0.2, 0.2] },
+]);
+const perQuery = await db.vectorSearchBatch('embeddings', [[0.1, 0.2, 0.3], [0.9, 0, 0]], 5, { filter: { lang: 'en' } });
+const similar = await db.vectorSearchByExamples('embeddings', ['doc-1'], 5);
+const english = await db.vectorCount('embeddings', { filter: { lang: 'en' } });
+
+await db.vectorAddNamedVector('embeddings', 'title', 2, 'dot');
+await db.vectorUpsertNamed('embeddings', 'doc-1', { default: [0.1, 0.2, 0.3], title: [1, 2] });
+const byTitle = await db.vectorSearch('embeddings', [1, 2], 5, { using: 'title' });
+```
+
+| Group | Methods |
+| --- | --- |
+| Writes | `vectorUpsertMany`, `vectorUpsertText`, `vectorUpsertNamed`, `vectorDeleteMany`, `vectorDeleteByFilter`, `vectorUpdateByFilter` |
+| Searches | `vectorSearchBatch`, `vectorSearchMulti`, `vectorSearchByExamples`, and the options of `vectorSearch` (`using`, `offset`, `exact`, `namespace`, ...) |
+| Reads | `vectorCount`, `vectorListPartitions`, `vectorEmbed`, `vectorListAliases` |
+| Collections | `vectorAddNamedVector`, `vectorSetAlias`, `vectorSetCollectionConfig`, `vectorCopyCollection`, `vectorRenameCollection` |
+| Index | `vectorRebuildIndex`, `vectorIndexStats`, `vectorMeasureRecall` |
 
 ## Graphs
 
@@ -310,6 +371,35 @@ const result = await db.graphQuery('social', 'MATCH (p:person) RETURN p.name ORD
 Also: `graphGetNode`, `graphGetEdge`, `graphDeleteNode`, `graphDeleteEdge`,
 `graphTraverse`, `graphWeightedShortestPath`, `graphDegree`, `graphListNodes`,
 `graphListEdges`, `graphListGraphs`, `graphDrop`.
+
+### Batches, algorithms, schema and Cypher writes
+
+These need server 0.1.0-rc.3 or later; an older server answers them with an error.
+
+```js
+await db.graphAddMany('social', {
+  nodes: [{ id: 'lin', labels: ['person'] }, { id: 'kay', labels: ['person'] }],
+  edges: [{ id: 'e2', from: 'lin', to: 'kay', label: 'knows' }],
+});
+const ranks = await db.graphPageRank('social', { limit: 10 });       // { ranks: [{ id, score }], ... }
+const parts = await db.graphConnectedComponents('social');
+
+await db.graphCreateConstraint('social', 'unique_name', 'person', 'name', 'unique');
+await db.graphExecute('social', "CREATE (n:person {name: 'Tim'})");
+
+await db.graphBeginTransaction('social');     // sets db.txn; graphExecute is queued until the commit
+await db.graphExecute('social', "CREATE (n:person {name: 'Una'})");
+await db.graphCommitTransaction('social');
+```
+
+| Group | Methods |
+| --- | --- |
+| Writes | `graphAddMany`, `graphRemoveMany`, `graphUpdateNode`, `graphUpdateEdge`, `graphImportCsv`, `graphCopy`, `graphExecute` (Cypher writes) |
+| Transactions | `graphBeginTransaction`, `graphCommitTransaction`, `graphRollbackTransaction` |
+| Walks and paths | `graphDfs`, `graphSubgraph`, `graphKShortestPaths`, `graphAllPaths` |
+| Algorithms | `graphPageRank`, `graphCentrality`, `graphCommunities`, `graphConnectedComponents`, `graphTriangleCount`, `graphNodeSimilarity`, `graphDetectCycle` |
+| Schema | `graphCreateNodeIndex`, `graphCreateConstraint`, `graphDropSchemaObject`, `graphListSchemaObjects`, `graphFindNodes` |
+| Inspection | `graphStats`, `graphSchema`, `graphCheckConsistency` |
 
 ## Cache
 
@@ -330,6 +420,47 @@ await db.cacheDelete('sessions', 'user:1');                // true if it existed
 | Sets | `cacheSAdd`, `cacheSRem`, `cacheSIsMember`, `cacheSCard`, `cacheSMembers` |
 | Hashes | `cacheHSet`, `cacheHSetText`, `cacheHGet`, `cacheHDel`, `cacheHGetAll`, `cacheHExists`, `cacheHLen` |
 | Streams | `cacheXAdd`, `cacheXAddText`, `cacheXLen`, `cacheXRange`, `cacheXRead`, `cacheXDel`, `cacheXTrim` |
+
+The groups below need server 0.1.0-rc.3 or later; an older server answers them
+with an error.
+
+```js
+import { CacheExpiry } from 'tricoredb';
+
+await db.cacheMSet('sessions', [['user:1', 'a'], ['user:2', 'b']]);
+const values = await db.cacheMGet('sessions', ['user:1', 'user:9']);   // [Buffer, null]
+await db.cacheSetIf('sessions', 'user:1', 'c', 'IfPresent', CacheExpiry.keep());
+
+await db.cacheZAdd('scores', 'board', [{ member: 'ada', score: 12 }, { member: 'lin', score: 7 }]);
+const top = await db.cacheZRangeWithScores('scores', 'board', 0, 9, { rev: true });
+
+const lock = await db.cacheLockAcquire('locks', 'report', 'worker-1', 30_000);
+if (lock.acquired) {
+  // pass lock.token to whatever the lock protects, then:
+  await db.cacheLockRelease('locks', 'report', 'worker-1');
+}
+```
+
+| Group | Methods |
+| --- | --- |
+| Keys | `cacheMGet`, `cacheMSet`, `cacheSetIf`, `cacheCompareAndSwap`, `cacheGetDel`, `cacheGetSet`, `cacheGetEx`, `cacheAppend`, `cacheExpireAt` |
+| Freshness | `cacheSetFresh`, `cacheGetFresh`, `cacheSetMissing`, `cacheWarm` |
+| Sorted sets | `cacheZAdd`, `cacheZRem`, `cacheZScore`, `cacheZCard`, `cacheZRank`, `cacheZRange`, `cacheZRangeWithScores`, `cacheZRangeByScore`, `cacheZRangeByScoreWithScores`, `cacheZIncrBy` |
+| Locks | `cacheLockAcquire`, `cacheLockRenew`, `cacheLockRelease` |
+| Bitmaps | `cacheSetBit`, `cacheGetBit`, `cacheBitCount`, `cacheBitPos`, `cacheBitOp` |
+| HyperLogLog | `cachePfAdd`, `cachePfCount`, `cachePfMerge` |
+| Lists | `cacheLMove`, `cacheLTrim`, `cacheBLPop`, `cacheBRPop` |
+| Sets and hashes | `cacheSUnion`, `cacheSInter`, `cacheSDiff`, `cacheSRandMember`, `cacheHIncrBy` |
+| Batches and scripts | `cachePipeline`, `cacheTransaction`, `cacheScriptLoad`, `cacheScriptRun` |
+| Pub/Sub | `cachePublish`, `cachePoll` |
+| Administration | `cacheStats`, `cacheHotKeys`, `cacheSetNamespaceLimit`, `cacheGetNamespaceLimit`, `cachePurgeExpired`, `cacheFlushDatabase` |
+
+`cachePipeline`, `cacheTransaction` and `cacheScriptLoad` take operations in
+the server's wire form, such as `{ Incr: { namespace: 'n', key: 'k', by: 1 } }`,
+and each result is `{ ok: <response data> }` or `{ error: '...' }`.
+`cacheFlushDatabase` and `cachePurgeExpired` act on the whole database named in
+their last argument. `cacheHotKeys` is refused unless the server sets
+`[cache] hot_keys`.
 
 ## LLM context
 
@@ -469,7 +600,12 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 | tricoredb | Node.js | TriCoreDB protocol |
 | --- | --- | --- |
-| 0.1.x | 18 – 26 | 1.0 |
+| 0.1.x, 0.2.x | 18 – 26 | 1.0 |
+| 0.3.x | 18 – 26 | 1.0 |
+
+0.3 adds methods for the operations of server 0.1.0-rc.3. They need that server
+or a later one; the methods of earlier releases work against older servers as
+before.
 
 This package follows [semantic versioning](https://semver.org). See
 [CHANGELOG.md](CHANGELOG.md) for release notes.

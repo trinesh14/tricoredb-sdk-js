@@ -2,7 +2,15 @@ import { ENGINE_DISABLED, NOT_LEADER } from './constants.js';
 import { ProtocolError, TriCoreError } from './errors.js';
 import { DocFilter } from './builders.js';
 import type { Response } from './results.js';
-import type { CacheBytes, CacheStreamEntry, LlmSource } from './types.js';
+import type {
+  CacheBytes,
+  CacheScoreBound,
+  CacheScoredMember,
+  CacheScoredMemberInput,
+  CacheStreamEntry,
+  LlmSource,
+  VectorSearchOptions,
+} from './types.js';
 
 export function kindOf(data: unknown): string {
   if (data && typeof data === 'object') {
@@ -198,4 +206,106 @@ function disabledHint(serverMessage: string | null): string {
     `The server operator must turn it on: for the TriCoreDB container, ${envExample} ` +
     `and recreate the container; for a server using a config file, set ${tomlExample} and restart.]`
   );
+}
+
+export function cacheValues(resp: Response, what: string): (Buffer | null)[] {
+  const a = arm(resp, 'CacheValues');
+  if (a.present) {
+    return ((a.value as (number[] | null)[] | null) || []).map((v) => (v === null ? null : Buffer.from(v)));
+  }
+  throw new ProtocolError(`expected CacheValues for ${what}, got ${kindOf(resp.data)}`);
+}
+
+/** Drop the keys left `undefined`, so an option the caller did not give takes the server's default. */
+export function given(fields: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(fields)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out;
+}
+
+/** `[key, value]` pairs as the server's `CacheEntry` list. */
+export function cacheEntries(
+  entries: ReadonlyArray<readonly [string, CacheBytes]>,
+  name: string,
+): { key: string; value: number[] }[] {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    throw new TriCoreError(`${name} must be a non-empty array of [key, value] pairs`);
+  }
+  return entries.map((e: readonly [string, CacheBytes]) => {
+    if (!Array.isArray(e) || e.length !== 2 || typeof e[0] !== 'string') {
+      throw new TriCoreError(`each ${name} entry must be a [key, value] pair with a string key`);
+    }
+    return { key: e[0], value: bytes(e[1], `${name} value`) };
+  });
+}
+
+export function scoredMembers(members: ReadonlyArray<CacheScoredMemberInput>, name: string): { score: number; member: number[] }[] {
+  if (!Array.isArray(members) || members.length === 0) {
+    throw new TriCoreError(`${name} must be a non-empty array of { member, score }`);
+  }
+  return members.map((m: CacheScoredMemberInput) => {
+    if (!m || typeof m.score !== 'number' || Number.isNaN(m.score)) {
+      throw new TriCoreError(`each ${name} entry needs a numeric score that is not NaN`);
+    }
+    return { score: m.score, member: bytes(m.member, `${name} member`) };
+  });
+}
+
+/**
+ * One end of a score range. JSON has no infinity, so an infinite bound travels
+ * as the largest finite double: the server stores no infinite score, so that
+ * bound admits exactly what an infinite one would.
+ */
+export function scoreBound(bound: number | CacheScoreBound, name: string): { value: number; exclusive: boolean } {
+  const b = typeof bound === 'number' ? { value: bound, exclusive: false } : bound;
+  if (!b || typeof b.value !== 'number' || Number.isNaN(b.value)) {
+    throw new TriCoreError(`${name} must be a number or { value, exclusive } with a value that is not NaN`);
+  }
+  let value = b.value;
+  if (value === Infinity) value = Number.MAX_VALUE;
+  if (value === -Infinity) value = -Number.MAX_VALUE;
+  return { value, exclusive: !!b.exclusive };
+}
+
+export function scoredResults(members: { member: number[]; score: number }[] | null | undefined): CacheScoredMember[] {
+  return (members || []).map((m) => ({ member: Buffer.from(m.member), score: m.score }));
+}
+
+/** `GetFresh` carries the value as `value` (UTF-8 text) or `valueHex` (anything else). */
+export function freshValue(json: { value?: unknown; valueHex?: unknown }): Buffer | null {
+  if (typeof json.value === 'string') return Buffer.from(json.value, 'utf8');
+  if (typeof json.valueHex === 'string') return Buffer.from(json.valueHex, 'hex');
+  return null;
+}
+
+/** The server's flattened `SearchOptions`, from the camelCase options a caller gives. */
+export function searchOptions(opts: VectorSearchOptions): Record<string, unknown> {
+  return given({
+    offset: opts.offset,
+    include_metadata: opts.includeMetadata,
+    max_distance: opts.maxDistance,
+    ef_search: opts.efSearch,
+    exact: opts.exact,
+    score_metric: opts.scoreMetric,
+    filter_strategy: opts.filterStrategy,
+    using: opts.using,
+    tenant: opts.tenant,
+    namespace: opts.namespace,
+    sparse: opts.sparse,
+    hybrid_alpha: opts.hybridAlpha,
+    explain: opts.explain,
+    score_expr: opts.scoreExpr,
+    explain_text: opts.explainText,
+    ann: opts.ann,
+    nprobe: opts.nprobe,
+  });
+}
+
+export function vectorList(vectors: ReadonlyArray<ArrayLike<number>>, name: string): number[][] {
+  if (!Array.isArray(vectors) || vectors.length === 0) {
+    throw new TriCoreError(`${name} must be a non-empty array of vectors`);
+  }
+  return vectors.map((v: ArrayLike<number>) => numbers(v));
 }

@@ -131,7 +131,8 @@ export class Pool {
   }
 
   private _release(conn: TriCore, broken: boolean): void {
-    if (conn.inTransaction) broken = true;
+    // An open document or graph transaction would follow the connection to its next borrower.
+    if (conn.inTransaction || conn.txn !== null) broken = true;
     if (broken || this._closed) {
       this._created -= 1;
       conn.close().catch(() => undefined);

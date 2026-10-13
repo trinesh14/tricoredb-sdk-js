@@ -1,6 +1,6 @@
 {
   "name": "tricoredb",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TriCoreDB client for Node.js: native tricore wire protocol, SQL, documents, vectors, graphs and cache, zero runtime dependencies.",
   "keywords": [
     "tricoredb",

@@ -6,6 +6,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-13
+
+### Added
+
+- A typed method for each of the 116 operations added in TriCoreDB server
+  0.1.0-rc.3. **They need server 0.1.0-rc.3 or later: an older server answers
+  them with an error.** Methods from earlier releases are unchanged.
+  - Cache (53): multi get and set, conditional and compare-and-swap writes,
+    stale-while-revalidate reads, sorted sets, fencing locks, bitmaps,
+    HyperLogLog, list moves and blocking pops, set algebra, pipelines,
+    transactions and scripts, publish and poll, namespace limits, statistics,
+    whole-database purge and flush.
+  - Document (13): replace, insert many, delete many, bulk write, transactions,
+    collection options (schema, defaults, versioning), rename, explain, index
+    rebuild, TTL purge.
+  - Vector (21): batch upsert and delete, text upsert and embedding, named
+    vectors, aliases, batch, multi-query and by-example search, filtered
+    update, delete and count, partitions, collection copy, rename and
+    configuration, index rebuild, statistics and recall.
+  - Graph (29): bulk add and remove, in-place updates, CSV import, Cypher
+    writes, transactions, depth-first walks, subgraphs, k-shortest and all
+    paths, PageRank, centrality, communities, components, triangles,
+    similarity, cycle detection, indexes and constraints, statistics, schema
+    and consistency checks.
+- `DocBulk`: builders for the items of `documentBulkWrite`.
+- `CacheExpiry`: what `cacheSetIf` and `cacheGetEx` do with a key's deadline.
+- `TriCore.txn`: the open document or graph transaction. While it is set every
+  request carries it as `options.txn`. The begin methods set it; commit and
+  rollback clear it. A pooled connection left with one is closed rather than
+  handed to the next borrower, and a request inside one is not sent to another
+  node on `not_leader`.
+- `vectorSearch` accepts the server's search options (`using`, `offset`,
+  `exact`, `namespace`, ...). A call without them sends what it always sent.
+- `VectorMetric` includes `l1` and `linf`.
+
+### Notes
+
+- `cacheZRangeByScore` sends an infinite bound as the largest finite double,
+  because JSON has no infinity and the server stores no infinite score.
+- `cacheHotKeys` returns the server's response as is: the operation is refused
+  unless the server sets `[cache] hot_keys`.
+
 ## [0.2.0] - 2026-09-17
 
 ### Added
@@ -69,7 +111,8 @@ First release.
   falling back.
 - A failed login is reported as `AuthError`.
 
-[Unreleased]: https://github.com/trinesh14/tricoredb-sdk-js/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/trinesh14/tricoredb-sdk-js/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/trinesh14/tricoredb-sdk-js/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/trinesh14/tricoredb-sdk-js/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/trinesh14/tricoredb-sdk-js/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/trinesh14/tricoredb-sdk-js/releases/tag/v0.1.0

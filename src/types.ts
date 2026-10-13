@@ -120,7 +120,7 @@ export interface CacheStreamEntry {
   text: Record<string, string>;
 }
 
-export type VectorMetric = 'cosine' | 'dot' | 'l2';
+export type VectorMetric = 'cosine' | 'dot' | 'l2' | 'l1' | 'linf';
 export type VectorQuantization = 'none' | 'int8';
 export type GraphDirection = 'outgoing' | 'incoming' | 'both';
 
@@ -248,4 +248,635 @@ export interface LlmOptions {
   maxRows?: number | null;
   redactSensitive?: boolean;
   includeSchema?: boolean;
+}
+
+// -- cache: server 0.1.0-rc.3 -------------------------------------------------
+
+/** When `cacheSetIf` writes: unconditionally, only if absent (`NX`), only if present (`XX`). */
+export type CacheSetCondition = 'Always' | 'IfAbsent' | 'IfPresent';
+
+/** What happens to a key's expiry. Build it with `CacheExpiry`. */
+export type CacheExpiryValue = 'Keep' | 'Clear' | { Set: { ttl_ms: number } };
+
+export type CacheListEnd = 'Left' | 'Right';
+
+/** `Not` takes exactly one source key. */
+export type CacheBitOp = 'And' | 'Or' | 'Xor' | 'Not';
+
+/** One cache operation in the server's externally-tagged wire form, for a pipeline, transaction or script. */
+export type CacheOpValue = string | { [variant: string]: unknown };
+
+/** One operation's outcome in a pipeline, transaction or script: its response data, or its error. */
+export type CacheOpResult = { ok: Json; error?: undefined } | { error: string; ok?: undefined };
+
+export interface CacheScoredMemberInput {
+  member: CacheBytes;
+  score: number;
+}
+
+export interface CacheScoredMember {
+  member: Buffer;
+  score: number;
+}
+
+/** One end of a score range. `exclusive` leaves the bound itself out. */
+export interface CacheScoreBound {
+  value: number;
+  exclusive?: boolean;
+}
+
+export interface CacheFreshWrite {
+  set: boolean;
+  freshUntilMs: number;
+}
+
+/**
+ * A stale-while-revalidate read. `fresh` and `stale` carry the value;
+ * `refresh` is true for the one caller that should refresh a stale value,
+ * `lease` for the one caller that should compute a missing one. `missing` is a
+ * cached absence (`cacheSetMissing`).
+ */
+export interface CacheFreshRead {
+  state: 'fresh' | 'stale' | 'missing' | 'miss';
+  value: Buffer | null;
+  refresh: boolean;
+  lease: boolean;
+  retryAfterMs: number | null;
+}
+
+export interface CacheWarmResult {
+  written: number;
+  alreadyCached: number;
+}
+
+export interface CacheZAddResult {
+  added: number;
+  updated: number;
+}
+
+/** `token` is the fencing token: it only ever rises for one lock. Null when the lock is held by `holder`. */
+export interface CacheLock {
+  acquired: boolean;
+  token: number | null;
+  holder: string | null;
+  expiresAtMs: number | null;
+}
+
+export interface CacheLockRenewal {
+  renewed: boolean;
+  token: number | null;
+  expiresAtMs: number | null;
+}
+
+export interface CacheExpireAtResult {
+  updated: boolean;
+  /** The deadline had already passed, so the key was deleted. */
+  deleted: boolean;
+}
+
+export interface CacheStats {
+  hits: number;
+  misses: number;
+  hitRatio: number | null;
+  memory: { [k: string]: Json };
+  eviction: { [k: string]: Json };
+  [k: string]: Json;
+}
+
+/**
+ * `current` is what the key held when the swap was refused, when that is valid
+ * UTF-8. A binary value sets `currentIsBinary` instead: read it with `cacheGet`.
+ */
+export interface CacheSwapResult {
+  swapped: boolean;
+  current: Buffer | null;
+  currentIsBinary: boolean;
+}
+
+export interface CacheTrimResult {
+  length: number;
+  removed: number;
+}
+
+export interface CacheScriptLoaded {
+  loaded: string;
+  ops: number;
+}
+
+export interface CacheScriptRun {
+  results: CacheOpResult[];
+  /** The operations that ran, with the arguments substituted. */
+  ops: CacheOpValue[];
+}
+
+export interface CacheListPop {
+  key: string;
+  value: Buffer;
+}
+
+export interface CacheNamespaceLimit {
+  namespace: string;
+  max_keys: number | null;
+  max_bytes: number | null;
+  keys: number;
+  bytes: number;
+}
+
+export interface CacheMessage {
+  id: number;
+  channel: string;
+  message: string;
+  at_ms: number;
+}
+
+/** `next` is the id to pass as `after` on the following poll. */
+export interface CachePollResult {
+  messages: CacheMessage[];
+  next: number;
+}
+
+// -- document: server 0.1.0-rc.3 ----------------------------------------------
+
+/** Whether a by-id write hands back the document it touched, and which version of it. */
+export type DocumentReturn = 'None' | 'Before' | 'After';
+
+export interface DocumentSortKey {
+  field: string;
+  descending?: boolean;
+  collation?: { case_insensitive?: boolean; numeric?: boolean };
+}
+
+/** One item of `documentBulkWrite` in the server's externally-tagged wire form. Build it with `DocBulk`. */
+export type BulkOpValue = { [variant: string]: unknown };
+
+/** `document` is present only when `return` asked for it and that version exists. */
+export interface DocumentReplaceResult {
+  replaced: boolean;
+  inserted: boolean;
+  id: string;
+  document?: JsonObject;
+}
+
+export interface DocumentRenameResult {
+  renamed: boolean;
+  from: string;
+  to: string;
+  documents: number;
+  indexes: number;
+}
+
+export interface DocumentPurgeResult {
+  purged: number;
+  /** More expired documents remain; call again. */
+  more: boolean;
+}
+
+export interface DocumentExplain {
+  plan: string;
+  index: string | null;
+  index_used: boolean;
+  scan_reason: string | null;
+  scan_source: string | null;
+  estimated_rows: number;
+  estimated_cost: number;
+  rows_examined: number;
+  rows_returned: number;
+  elapsed_us: number;
+  [k: string]: Json;
+}
+
+export interface DocumentCommitResult {
+  committed: boolean;
+  writes: number;
+}
+
+export interface DocumentRebuildResult {
+  rebuilt: string;
+  documents: number;
+  entries: number;
+}
+
+export type DocumentFieldType = 'string' | 'number' | 'integer' | 'boolean' | 'object' | 'array' | 'null';
+
+/** What one field may hold. Every rule given must pass. */
+export interface DocumentFieldRule {
+  type?: DocumentFieldType;
+  one_of?: Json[];
+  minimum?: number;
+  maximum?: number;
+  min_length?: number;
+  max_length?: number;
+  pattern?: string;
+}
+
+export interface DocumentSchema {
+  required?: string[];
+  fields?: Record<string, DocumentFieldRule>;
+  /** Whether a top-level field the schema does not name is allowed. Default true. */
+  additional_fields?: boolean;
+}
+
+/** Rules a collection applies to every document written into it. */
+export interface DocumentCollectionOptions {
+  schema?: DocumentSchema;
+  /** `path -> value` given to a newly created document that lacks the path. */
+  defaults?: Record<string, Json>;
+  /** Keep a `_version` counter on every document, enabling `expectedVersion`. */
+  versioned?: boolean;
+}
+
+export interface DocumentOptionsUpdate {
+  updated: boolean;
+  documents_checked: number;
+}
+
+export interface DocumentBulkResult {
+  inserted: number;
+  updated: number;
+  replaced: number;
+  deleted: number;
+  upserted: number;
+  inserted_ids: string[];
+}
+
+// -- vector: server 0.1.0-rc.3 ------------------------------------------------
+
+export interface VectorUpsertItem {
+  id: string;
+  vector: ArrayLike<number>;
+  metadata?: Json;
+}
+
+export interface VectorTextItem {
+  id: string;
+  text: string;
+  metadata?: Json;
+}
+
+export interface VectorSparse {
+  indices: number[];
+  values: number[];
+}
+
+/** How a search is shaped and how hard it looks. Every field is optional; the server supplies the defaults. */
+export interface VectorSearchOptions {
+  /** Skip this many ranked hits before `topK`. */
+  offset?: number;
+  /** Whether each hit carries its metadata. Default true. */
+  includeMetadata?: boolean;
+  /** Only hits within this distance, in the metric's own units. Refused for `dot`. */
+  maxDistance?: number;
+  efSearch?: number;
+  /** Score every stored vector instead of walking the ANN index. */
+  exact?: boolean;
+  scoreMetric?: VectorMetric;
+  filterStrategy?: 'auto' | 'graph' | 'exact';
+  /** Search this named vector (`vectorAddNamedVector`) instead of the default one. */
+  using?: string;
+  tenant?: string;
+  namespace?: string;
+  sparse?: VectorSparse;
+  hybridAlpha?: number;
+  /** Give each hit a one-line `reason`. */
+  explain?: boolean;
+  scoreExpr?: string;
+  explainText?: string;
+  ann?: 'hnsw' | 'ivf' | 'ivf_pq';
+  nprobe?: number;
+}
+
+/** A hit of the batch, multi and by-example searches. Which optional fields appear depends on the options asked for. */
+export interface VectorSearchHit {
+  id: string;
+  score: number;
+  metadata?: Json;
+  vector?: number[];
+  reason?: string;
+  [k: string]: Json | undefined;
+}
+
+export interface VectorEmbedding {
+  dimension: number;
+  embedder: string;
+  vectors: number[][];
+  sparse: VectorSparse[];
+}
+
+export interface VectorAlias {
+  alias: string;
+  collection: string;
+}
+
+export interface VectorPartitions {
+  field: string;
+  partitions: { name: string; count: number }[];
+  unpartitioned: number;
+}
+
+export interface VectorRenameResult {
+  renamed: boolean;
+  from: string;
+  to: string;
+  moved: number;
+}
+
+export interface VectorRebuildResult {
+  rebuilt: boolean;
+  persisted: boolean;
+  vectors: number;
+  tombstones_cleared: number;
+  build_ms: number;
+  [k: string]: Json;
+}
+
+/** The index's shape. The fields beyond these depend on the index kind (`flat`, `hnsw`, ...). */
+export interface VectorIndexStats {
+  collection: string;
+  index: string;
+  [k: string]: Json;
+}
+
+/** `measured` is false, with a `reason`, when the collection is answered by an exact scan. */
+export interface VectorRecall {
+  collection: string;
+  index: string;
+  measured: boolean;
+  recall: number;
+  reason?: string;
+  [k: string]: Json | undefined;
+}
+
+export interface VectorMultiHit {
+  id: string;
+  score: number;
+  /** How many of the queries ranked this vector. */
+  matched: number;
+  metadata?: Json;
+}
+
+export interface VectorMultiHits {
+  fusion: 'rrf' | 'max' | 'mean';
+  queries: number;
+  depth: number;
+  results: VectorMultiHit[];
+}
+
+export interface VectorCollectionConfig {
+  collection: string;
+  normalize: boolean;
+  m: number;
+  ef_construction: number;
+  multi_tenant: boolean;
+  named: { name: string; dimension: number; metric: VectorMetric }[];
+}
+
+/** An example for `vectorSearchByExamples`: a stored vector's id, or a vector given inline. */
+export type VectorExample = string | ArrayLike<number>;
+
+/** By-example hits, best first. `index` (non-enumerable) names the path that served them. */
+export interface VectorExampleHits extends Array<VectorSearchHit> {
+  readonly index: string;
+}
+
+// -- graph: server 0.1.0-rc.3 -------------------------------------------------
+
+export interface GraphNodeInput {
+  id: string;
+  labels?: string[];
+  properties?: Json;
+}
+
+export interface GraphEdgeInput {
+  id: string;
+  from: string;
+  to: string;
+  label: string;
+  properties?: Json;
+}
+
+export interface GraphBatchResult {
+  nodes: number;
+  edges: number;
+  atomic: boolean;
+}
+
+export interface GraphRemoveResult {
+  nodes_removed: number;
+  edges_removed: number;
+  atomic: boolean;
+}
+
+export interface GraphCopyResult {
+  copied: boolean;
+  to: string;
+  nodes: number;
+  edges: number;
+}
+
+export interface GraphDfsResult extends GraphTraversal {
+  order: string;
+}
+
+export interface GraphComponent {
+  nodes: string[];
+  size: number;
+  truncated: boolean;
+}
+
+/** `count` and `largest` describe every component; `components` lists at most `limit` of them. */
+export interface GraphComponents {
+  kind: 'weak' | 'strong';
+  count: number;
+  largest: number;
+  truncated: boolean;
+  components: GraphComponent[];
+}
+
+export interface GraphCycle {
+  hasCycle: boolean;
+  directed: boolean;
+  cycle: { nodes: string[]; edges: string[] } | null;
+}
+
+export interface GraphStats {
+  nodes: number;
+  edges: number;
+  nodeLabels: Record<string, number>;
+  edgeTypes: Record<string, number>;
+  selfLoops: number;
+  isolatedNodes: number;
+  unlabeledNodes: number;
+  danglingEdges: number;
+  maxInDegree: number;
+  maxOutDegree: number;
+  avgOutDegree: number;
+  [k: string]: Json;
+}
+
+export interface GraphSubgraph {
+  direction: GraphDirection;
+  max_depth: number;
+  limit: number;
+  nodes: (GraphNode & { depth: number })[];
+  edges: GraphEdge[];
+  node_count: number;
+  edge_count: number;
+  nodes_truncated: boolean;
+  edges_truncated: boolean;
+}
+
+export interface GraphPropertyInfo {
+  key: string;
+  count: number;
+  types: string[];
+}
+
+export interface GraphSchemaInfo {
+  nodes: number;
+  edges: number;
+  node_labels: { label: string; count: number; properties: GraphPropertyInfo[] }[];
+  edge_types: { type: string; count: number; properties: GraphPropertyInfo[] }[];
+  unlabeled_nodes: { count: number; properties: GraphPropertyInfo[] };
+}
+
+export interface GraphRankedPath {
+  nodes: string[];
+  edges: string[];
+  hops: number;
+  cost: number;
+}
+
+export interface GraphPaths {
+  from: string;
+  to: string;
+  direction: GraphDirection;
+  k: number;
+  weight_property: string | null;
+  count: number;
+  paths: GraphRankedPath[];
+}
+
+/** `complete` is false, with `stopped_by` naming the bound, when the enumeration did not finish. */
+export interface GraphAllPaths {
+  from: string;
+  to: string;
+  direction: GraphDirection;
+  max_depth: number;
+  limit: number;
+  count: number;
+  complete: boolean;
+  stopped_by: string | null;
+  paths: GraphRankedPath[];
+}
+
+export interface GraphScore {
+  id: string;
+  score: number;
+}
+
+export type GraphCentralityMeasure = 'betweenness' | 'closeness' | 'eigenvector';
+
+/** `iterations` and `converged` are reported for `eigenvector` only. */
+export interface GraphCentrality {
+  measure: GraphCentralityMeasure;
+  directed: boolean;
+  nodes: number;
+  results: GraphScore[];
+  iterations?: number;
+  converged?: boolean;
+}
+
+export interface GraphCommunities {
+  algorithm: string;
+  count: number;
+  modularity: number;
+  iterations: number;
+  converged: boolean;
+  communities: GraphComponent[];
+}
+
+export interface GraphTriangles {
+  triangles: number;
+  transitivity: number;
+  average_clustering: number;
+  nodes: { id: string; triangles: number; clustering: number }[];
+}
+
+export interface GraphSimilarity {
+  node: string;
+  direction: GraphDirection;
+  metric: 'jaccard' | 'overlap';
+  count: number;
+  results: GraphScore[];
+}
+
+export interface GraphFindings {
+  count: number;
+  listed: Json[];
+}
+
+export interface GraphConsistency {
+  consistent: boolean;
+  nodes: number;
+  edges: number;
+  dangling_edges: GraphFindings;
+  undecodable: GraphFindings;
+  misfiled: GraphFindings;
+  mirror: { loaded: boolean; differences: GraphFindings };
+}
+
+export type GraphConstraintKind = 'unique' | 'required';
+export type GraphConstraintTarget = 'node' | 'edge';
+
+export interface GraphSchemaObjects {
+  indexes: { name: string; label: string | null; properties: string[] }[];
+  constraints: {
+    name: string;
+    label: string;
+    property: string;
+    kind: GraphConstraintKind;
+    target: GraphConstraintTarget;
+  }[];
+}
+
+/** `plan` says how the request was answered: an index by name, the label index, or `scan`. */
+export interface GraphFoundNodes {
+  nodes: GraphNode[];
+  count: number;
+  plan: string;
+  truncated: boolean;
+}
+
+export interface GraphPageRank {
+  damping: number;
+  iterations: number;
+  converged: boolean;
+  count: number;
+  truncated: boolean;
+  ranks: GraphScore[];
+}
+
+/**
+ * What a Cypher write did. Inside a graph transaction the statement is queued
+ * instead: only `queued` and `transaction` are present.
+ */
+export interface GraphWriteResult {
+  graph?: string;
+  statements?: number;
+  nodesCreated?: number;
+  nodesDeleted?: number;
+  relationshipsCreated?: number;
+  relationshipsDeleted?: number;
+  propertiesSet?: number;
+  labelsAdded?: number;
+  labelsRemoved?: number;
+  queued?: number;
+  transaction?: string;
+  [k: string]: Json | undefined;
+}
+
+/** A committed graph transaction: how many statements, and what they did together. */
+export interface GraphCommitResult extends GraphWriteResult {
+  committed: number;
+  cypher?: string;
 }
