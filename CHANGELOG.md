@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Against server 0.1.0-rc.3 and later, a `begin()` inside an open session
+  transaction opens a nested block (a savepoint) instead of being refused: its
+  `commit()` releases it and its `rollback()` undoes only that block. Those
+  calls answer with `nested_depth` and no `transaction`, so
+  `TransactionSummary.transaction` is now optional. `inTransaction` stays true
+  until the outermost block ends; before this, ending a nested block made it
+  report false while the outer block was still open, which would have let a
+  pool hand the connection on mid-transaction.
+
 ## [0.3.0] - 2026-10-13
 
 ### Added

@@ -58,9 +58,49 @@ test('session transactions commit, roll back and refuse misuse by name', { skip:
     await db.commit();
     assert.equal(await count(other), 2);
 
+    // A BEGIN inside an open block opens a nested block backed by a savepoint
+    // (server 0.1.0-rc.3 and later; 0.1.0-rc.2 refused it). Rolling the inner
+    // block back undoes only what it wrote, and the outer block stays open.
+    const ids = async (conn) => (await conn.query(`SELECT id FROM ${TABLE} ORDER BY id`)).rows.map((r) => r[0]);
     await db.begin();
-    await assert.rejects(() => db.begin(), /already open|BEGIN is refused/i);
-    await db.rollback();
+    await db.execute(`INSERT INTO ${TABLE} VALUES (60, 6000)`);
+    assert.equal((await db.begin()).nested_depth, 1);
+    assert.equal(db.inTransaction, true);
+    await db.execute(`INSERT INTO ${TABLE} VALUES (61, 6100)`);
+    assert.deepEqual(await ids(db), ['2', '5', '60', '61']);
+    assert.equal((await db.rollback()).nested_depth, 0);
+    assert.equal(db.inTransaction, true, 'the outer block is still open');
+    assert.deepEqual(await ids(db), ['2', '5', '60'], 'only the inner block was undone');
+    assert.deepEqual(await ids(other), ['2', '5'], 'nothing is committed yet');
+    assert.equal((await db.commit()).transaction, 'committed');
+    assert.equal(db.inTransaction, false);
+    assert.deepEqual(await ids(other), ['2', '5', '60']);
+
+    // A nested block that commits keeps its writes only if the outer one does.
+    await db.begin();
+    await db.begin();
+    await db.execute(`INSERT INTO ${TABLE} VALUES (62, 6200)`);
+    assert.equal((await db.commit()).nested_depth, 0);
+    assert.equal(db.inTransaction, true);
+    assert.equal((await db.rollback()).transaction, 'rolled_back');
+    assert.equal(db.inTransaction, false);
+    assert.deepEqual(await ids(other), ['2', '5', '60']);
+
+    // withTransaction inside an open block is a nested block: a throw undoes
+    // its own writes and leaves the outer block open.
+    await db.begin();
+    await db.execute(`DELETE FROM ${TABLE} WHERE id = 60`);
+    await assert.rejects(
+      () => db.withTransaction(async (tx) => {
+        await tx.execute(`INSERT INTO ${TABLE} VALUES (63, 6300)`);
+        throw new Error('inner failure');
+      }),
+      /inner failure/,
+    );
+    assert.equal(db.inTransaction, true);
+    assert.deepEqual(await ids(db), ['2', '5']);
+    await db.commit();
+    assert.deepEqual(await ids(other), ['2', '5']);
 
     // withTransaction rolls back on a thrown error and re-throws that error.
     const boom = new Error('application error after a write');

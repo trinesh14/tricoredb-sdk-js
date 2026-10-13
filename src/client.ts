@@ -2655,6 +2655,10 @@ export class TriCore {
   /**
    * Open a session transaction on this connection. Refuses by name when the
    * server did not grant SESSION_TXN; it never falls back to autocommit.
+   *
+   * Inside an open block, server 0.1.0-rc.3 and later open a nested block (a
+   * savepoint): its `commit()` releases it, its `rollback()` undoes only that
+   * block, and both answer with `nested_depth`. Earlier servers refuse it.
    */
   async begin(database = 'main'): Promise<TransactionSummary> {
     if ((this.grantedFeatures & FEATURE_SESSION_TXN) === 0) {
@@ -2701,8 +2705,10 @@ export class TriCore {
       if (keyword !== 'BEGIN' && !(e && (e as TriCoreError).notSent)) this._txnOpen = false;
       throw e;
     }
-    this._txnOpen = keyword === 'BEGIN';
-    return jsonData(resp, keyword);
+    const summary = jsonData(resp, keyword);
+    // A reply carrying `nested_depth` came from a nested block: the outer one is still open.
+    this._txnOpen = keyword === 'BEGIN' || (!!summary && typeof summary.nested_depth === 'number');
+    return summary;
   }
 
   // -- transport --------------------------------------------------------------

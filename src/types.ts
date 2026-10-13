@@ -97,9 +97,14 @@ export type SqlValue = null | undefined | boolean | number | bigint | string | D
 /** One `transaction()` entry: a SQL string, or `[sql, args]`. */
 export type TransactionStatement = string | readonly [string, ReadonlyArray<SqlValue>];
 
-/** The server's account of a transaction. */
+/**
+ * The server's account of a transaction. A nested block (a `begin()` inside an
+ * open one, and the `commit()` or `rollback()` that ends it) answers with
+ * `nested_depth`, the depth after the call, and no `transaction`.
+ */
 export interface TransactionSummary {
-  transaction: string;
+  transaction?: string;
+  nested_depth?: number;
   statements?: number;
   committed_writes?: number;
   discarded_writes?: number;
